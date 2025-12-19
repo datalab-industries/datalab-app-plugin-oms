@@ -6,7 +6,7 @@ import pytest
 
 from datalab_app_plugin_oms.utils import parse_oms_csv, parse_oms_dat, parse_oms_exp
 
-OMS_DATA_DIR = Path(__file__).parent.parent.parent / "example_data" / "OMS"
+OMS_DATA_DIR = Path(__file__).parent.parent / "example_data"
 OMS_TEST_FILE = OMS_DATA_DIR / "2025_11_21_kdj_354_F"
 
 
