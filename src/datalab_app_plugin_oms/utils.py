@@ -16,12 +16,17 @@ from pathlib import Path
 import pandas as pd
 
 
-def parse_oms_dat(filepath: str | Path) -> pd.DataFrame:
+def parse_oms_dat(
+    filepath: str | Path,
+    csv_filepath: str | Path | None = None,
+    num_species: int | None = None,
+    species_names: list[str] | None = None,
+) -> pd.DataFrame:
     """
     Parse OMS .dat binary file
 
     The .dat format contains 46-byte binary records, each starting with a 'V1' marker.
-    There are 7 records per timepoint (6 measured species + 1 (assumed) total pressure measurement).
+    The number of records per timepoint is variable depending on instrument configuration.
 
     File structure:
         - 46-byte records starting with 'V1' marker (2 bytes)
@@ -29,51 +34,108 @@ def parse_oms_dat(filepath: str | Path) -> pd.DataFrame:
         - First V1 marker starts at byte 5 in the file
 
     Record order per timepoint:
-        0: Total pressure or reference (~1.7e-06, not in CSV export)
-        1: O2 (Scan 2, mass 32)
-        2: Ar (Scan 3, mass 40)
-        3: CO/N2 (Scan 4, mass 28)
-        4: H2 (Scan 5, mass 2)
-        5: C2H2 (Scan 6, mass 26)
-        6: CO2 (Scan 1, mass 44)
+        0: Vacuum (total pressure measurement)
+        1-n: Species 1 through n (measured species)
+
+    To parse the file, you must provide EITHER:
+    1. csv_filepath: Path to companion .csv file (to auto-detect number of species from columns)
+    2. num_species: Number of species being measured (excluding vacuum)
 
     Args:
         filepath: Path to .dat file
+        csv_filepath: Path to companion .csv file (used to determine number of species from columns).
+                     If not provided and num_species is not specified, will look for a
+                     .csv file with the same base name.
+        num_species: Number of species being measured (excluding the vacuum measurement).
+                    If provided, csv_filepath is not required.
+        species_names: Optional list of names for the species. Length must equal num_species.
+                      If not provided, species will be named "Species 1", "Species 2", etc.
 
     Returns:
         DataFrame with columns:
         - Data Point: Sequential measurement index (0, 1, 2, ...)
           NOTE: .dat files do not contain timestamp information
-        - CO2, O2, Ar, CO/N2, H2, C2H2: Species concentrations
-        - total_pressure: Additional measurement not in CSV export
+        - Vacuum: Total pressure measurement
+        - Species columns (named or numbered)
 
     Raises:
-        ValueError: If no V1 markers found in file
+        ValueError: If no V1 markers found in file, or if configuration is invalid
+        FileNotFoundError: If companion CSV file not found when csv_filepath is used
     """
     filepath = Path(filepath)
 
+    # Determine number of species
+    if num_species is not None:
+        # User specified the number of species
+        records_per_timepoint = num_species + 1  # +1 for vacuum
+    else:
+        # Need CSV file to determine number of species from columns
+        if csv_filepath is None:
+            csv_filepath = filepath.with_suffix(".csv")
+        else:
+            csv_filepath = Path(csv_filepath)
+
+        if not csv_filepath.exists():
+            raise FileNotFoundError(
+                f"Companion CSV file not found: {csv_filepath}\n"
+                f"Either provide a CSV file or specify num_species parameter."
+            )
+
+        # Parse CSV to count species columns (excluding time/metadata columns)
+        csv_data = parse_oms_csv(csv_filepath)
+        # Count columns that aren't time-related or metadata
+        species_columns = [
+            col
+            for col in csv_data.columns
+            if col not in ["Time", "ms", "Time (s)", "Data Point", "timepoint"]
+        ]
+        num_species = len(species_columns)
+        records_per_timepoint = num_species + 1  # +1 for vacuum
+
+    # Read binary .dat file
     with open(filepath, "rb") as f:
         data = f.read()
-
-    # Species mapping based on observed order in .dat file
-    # The CSV header defines 6 scans, but .dat has 7 records per timepoint
-    # This might change based on feedback from users - currently inferred from .csv file
-    species_map = {
-        0: "total_pressure",  # Not in CSV export, ~2x sum of species, ~1.7e-06
-        1: "O2",  # Scan 2: mass 32
-        2: "Ar",  # Scan 3: mass 40
-        3: "CO/N2",  # Scan 4: mass 28
-        4: "H2",  # Scan 5: mass 2
-        5: "C2H2",  # Scan 6: mass 26
-        6: "CO2",  # Scan 1: mass 44
-    }
-
-    records = []
 
     # Find first V1 marker
     first_v1 = data.find(b"V1")
     if first_v1 == -1:
         raise ValueError("No V1 markers found in .dat file")
+
+    # Count total V1 markers
+    total_records = 0
+    pos = first_v1
+    while pos + 46 <= len(data):
+        if data[pos : pos + 2] != b"V1":
+            break
+        total_records += 1
+        pos += 46
+
+    # Calculate num_timepoints from total records and records_per_timepoint
+
+    if total_records % records_per_timepoint != 0:
+        raise ValueError(
+            f"Total records ({total_records}) is not evenly divisible by "
+            f"records per timepoint ({records_per_timepoint} = {num_species} species + 1 vacuum). "
+            f"Check that num_species is correct."
+        )
+
+    # Validate species_names if provided
+    if species_names is not None:
+        if len(species_names) != num_species:
+            raise ValueError(
+                f"Length of species_names ({len(species_names)}) must equal "
+                f"num_species ({num_species})"
+            )
+
+    # Generate species mapping: position 0 is "Vacuum", rest are named or numbered
+    species_map = {0: "Vacuum"}
+    for i in range(1, records_per_timepoint):
+        if species_names is not None:
+            species_map[i] = species_names[i - 1]  # -1 because species_names doesn't include vacuum
+        else:
+            species_map[i] = f"Species {i}"
+
+    records = []
 
     # Parse all records starting from first V1
     pos = first_v1
@@ -89,9 +151,9 @@ def parse_oms_dat(filepath: str | Path) -> pd.DataFrame:
         value = struct.unpack("<d", data[value_pos : value_pos + 8])[0]
 
         # Determine data point and species (data_point being a row in the csv)
-        data_point = record_num // 7
-        species_idx = record_num % 7
-        species = species_map.get(species_idx, f"unknown_{species_idx}")
+        data_point = record_num // records_per_timepoint
+        species_idx = record_num % records_per_timepoint
+        species = species_map.get(species_idx, f"Unknown_{species_idx}")
 
         records.append(
             {
@@ -110,17 +172,14 @@ def parse_oms_dat(filepath: str | Path) -> pd.DataFrame:
     # Pivot to wide format (one row per data_point, one column per species)
     pivot_df = df.pivot(index="data_point", columns="species", values="value")
 
-    # Reorder columns to match CSV format
-    csv_column_order = ["CO2", "O2", "Ar", "CO/N2", "H2", "C2H2"]
-    available_cols = [col for col in csv_column_order if col in pivot_df.columns]
+    # Order columns: Vacuum first, then Species 1, 2, 3, etc.
+    column_order = ["Vacuum"]
+    for i in range(1, records_per_timepoint):
+        col_name = f"Species {i}"
+        if col_name in pivot_df.columns:
+            column_order.append(col_name)
 
-    # Add total_pressure at the end if present
-    if "total_pressure" in pivot_df.columns:
-        result_df = pivot_df[available_cols + ["total_pressure"]]
-    else:
-        result_df = pivot_df[available_cols]
-
-    result_df = result_df.reset_index()
+    result_df = pivot_df[column_order].reset_index()
 
     # .dat files don't contain real time information, so we use data_point index
     result_df["Data Point"] = result_df["data_point"]
