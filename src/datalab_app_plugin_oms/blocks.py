@@ -11,6 +11,7 @@ from pydatalab.blocks.base import DataBlock, event, generate_js_callback_single_
 from pydatalab.bokeh_plots import DATALAB_BOKEH_THEME, TOOLS
 from pydatalab.file_utils import get_file_info_by_id
 from pydatalab.logger import LOGGER
+from pydatalab.mongo import flask_mongo
 
 from datalab_app_plugin_oms.utils import parse_oms_csv, parse_oms_dat
 
@@ -24,6 +25,48 @@ class OMSBlock(DataBlock):
     @property
     def plot_functions(self):
         return (self.generate_oms_plot,)
+
+    def _find_companion_csv(self, current_file_path: Path) -> Path | None:
+        """
+        Search for a companion CSV file with the same base name in the item's attached files.
+
+        Args:
+            current_file_path: Path to the current file (e.g., .dat file)
+
+        Returns:
+            Path to companion CSV file if found, None otherwise
+        """
+        if "item_id" not in self.data:
+            return None
+
+        # Get the base name of the current file (without extension)
+        current_base_name = current_file_path.stem
+
+        # Query the database for all files attached to this item
+        item_info = flask_mongo.db.items.find_one(
+            {"item_id": self.data["item_id"]},
+            projection={"file_ObjectIds": 1},
+        )
+
+        if not item_info or "file_ObjectIds" not in item_info:
+            return None
+
+        # Search through all attached files for a CSV with the same base name
+        for file_id in item_info["file_ObjectIds"]:
+            try:
+                file_info = get_file_info_by_id(file_id, update_if_live=False)
+                file_path = Path(file_info["location"])
+
+                # Check if this is a CSV file with the same base name
+                if file_path.suffix.lower() == ".csv" and file_path.stem == current_base_name:
+                    LOGGER.debug(f"Found companion CSV file: {file_path} for {current_file_path}")
+                    return file_path
+
+            except OSError:
+                LOGGER.warning(f"Missing file found in database but not on disk: {file_id}")
+                continue
+
+        return None
 
     @event()
     def set_num_species(self, num_species):
@@ -376,9 +419,9 @@ class OMSBlock(DataBlock):
                     LOGGER.warning(f"Failed to parse .dat file with num_species={num_species}: {e}")
                     oms_data = None
             else:
-                # Try to find companion CSV
-                csv_path = file_path.with_suffix(".csv")
-                if csv_path.exists():
+                # Try to find companion CSV in the database
+                csv_path = self._find_companion_csv(file_path)
+                if csv_path is not None and csv_path.exists():
                     try:
                         oms_data = parse_oms_dat(file_path, csv_filepath=csv_path)
                     except ValueError as e:

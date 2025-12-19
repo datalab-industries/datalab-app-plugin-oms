@@ -13,6 +13,7 @@ more timepoints than a manually exported CSV snapshot.
 import struct
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -64,32 +65,34 @@ def parse_oms_dat(
     """
     filepath = Path(filepath)
 
-    # Determine number of species
-    if num_species is not None:
-        # User specified the number of species
-        records_per_timepoint = num_species + 1  # +1 for vacuum
+    # Determine number of species and get CSV data for name matching
+    # Always try to find and use the CSV file first
+    csv_data = None
+    csv_species_columns = None
+
+    # Try to locate the CSV file if not explicitly provided
+    if csv_filepath is None:
+        csv_filepath = filepath.with_suffix(".csv")
     else:
-        # Need CSV file to determine number of species from columns
-        if csv_filepath is None:
-            csv_filepath = filepath.with_suffix(".csv")
-        else:
-            csv_filepath = Path(csv_filepath)
+        csv_filepath = Path(csv_filepath)
 
-        if not csv_filepath.exists():
-            raise FileNotFoundError(
-                f"Companion CSV file not found: {csv_filepath}\n"
-                f"Either provide a CSV file or specify num_species parameter."
-            )
-
-        # Parse CSV to count species columns (excluding time/metadata columns)
+    # Try to load the CSV file for both species count and name matching
+    if csv_filepath.exists():
         csv_data = parse_oms_csv(csv_filepath)
-        # Count columns that aren't time-related or metadata
-        species_columns = [
+        csv_species_columns = [
             col
             for col in csv_data.columns
             if col not in ["Time", "ms", "Time (s)", "Data Point", "timepoint"]
         ]
-        num_species = len(species_columns)
+        num_species = len(csv_species_columns)
+        records_per_timepoint = num_species + 1  # +1 for vacuum
+    else:
+        # CSV file not found - use num_species if provided
+        if num_species is None:
+            raise FileNotFoundError(
+                f"Companion CSV file not found: {csv_filepath}\n"
+                f"Either provide a CSV file or specify num_species parameter."
+            )
         records_per_timepoint = num_species + 1  # +1 for vacuum
 
     # Read binary .dat file
@@ -172,13 +175,58 @@ def parse_oms_dat(
     # Pivot to wide format (one row per data_point, one column per species)
     pivot_df = df.pivot(index="data_point", columns="species", values="value")
 
-    # Order columns: Vacuum first, then Species 1, 2, 3, etc.
-    column_order = ["Vacuum"]
-    for i in range(1, records_per_timepoint):
-        col_name = f"Species {i}"
-        if col_name in pivot_df.columns:
-            column_order.append(col_name)
+    # If we have CSV data, match species names by comparing first data point values
+    if csv_data is not None and csv_species_columns is not None and len(csv_data) > 0:
+        # Get the first row of CSV data for each species
+        csv_first_values = {}
+        for col in csv_species_columns:
+            csv_first_values[col] = csv_data[col].iloc[0]
 
+        # Get the first row of DAT data for each species (excluding Vacuum)
+        dat_species_cols = [col for col in pivot_df.columns if col != "Vacuum"]
+        dat_first_values = {}
+        for col in dat_species_cols:
+            dat_first_values[col] = pivot_df[col].iloc[0]
+
+        # Match DAT species to CSV species by finding matching first values
+        # Since both files come from the same instrument, values should match to high precision
+        species_name_mapping = {}
+        all_matches_good = True
+
+        for dat_species, dat_value in dat_first_values.items():
+            best_match = None
+            best_diff = float("inf")
+
+            # Find the closest match first
+            for csv_species, csv_value in csv_first_values.items():
+                diff = abs(dat_value - csv_value)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_match = csv_species
+
+            # Verify the best match is within instrument precision
+            if best_match is not None:
+                csv_value = csv_first_values[best_match]
+                # Use numpy.isclose for robust floating point comparison
+                # rtol=1e-9, atol=1e-12 handles typical instrument precision
+                if np.isclose(dat_value, csv_value, rtol=1e-9, atol=1e-12):
+                    species_name_mapping[dat_species] = best_match
+                    # Remove matched CSV species to avoid duplicate matches
+                    csv_first_values.pop(best_match, None)
+                else:
+                    # Best match is not close enough - cannot reliably map species names
+                    all_matches_good = False
+                    break
+            else:
+                all_matches_good = False
+                break
+
+        # Only rename columns if all matches were within tolerance
+        if all_matches_good and len(species_name_mapping) == len(dat_first_values):
+            pivot_df = pivot_df.rename(columns=species_name_mapping)
+
+    # Order columns: Vacuum first, then the species columns
+    column_order = ["Vacuum"] + [col for col in pivot_df.columns if col != "Vacuum"]
     result_df = pivot_df[column_order].reset_index()
 
     # .dat files don't contain real time information, so we use data_point index
