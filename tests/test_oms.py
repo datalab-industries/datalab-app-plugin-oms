@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pydatalab.apps.oms.utils import parse_oms_csv, parse_oms_dat, parse_oms_exp
+from datalab_app_plugin_oms.utils import parse_oms_csv, parse_oms_dat, parse_oms_exp
 
 OMS_DATA_DIR = Path(__file__).parent.parent.parent / "example_data" / "OMS"
 OMS_TEST_FILE = OMS_DATA_DIR / "2025_11_21_kdj_354_F"
@@ -139,7 +139,7 @@ class TestOMSBlock:
 
     def test_block_creation(self):
         """Test that OMS block can be created"""
-        from pydatalab.apps.oms import OMSBlock
+        from datalab_app_plugin_oms import OMSBlock
 
         block = OMSBlock(item_id="test-id")
         assert block.blocktype == "oms"
@@ -147,7 +147,7 @@ class TestOMSBlock:
 
     def test_accepted_extensions(self):
         """Test that OMS block accepts correct file extensions"""
-        from pydatalab.apps.oms import OMSBlock
+        from datalab_app_plugin_oms import OMSBlock
 
         block = OMSBlock(item_id="test-id")
         assert ".csv" in block.accepted_file_extensions

@@ -7,7 +7,7 @@ from bokeh.layouts import column, row
 from bokeh.models import Button, CustomJS, HoverTool, Legend
 from bokeh.palettes import Category10_10
 from bokeh.plotting import ColumnDataSource, figure
-from pydatalab.apps.oms.utils import parse_oms_csv, parse_oms_dat
+from datalab_app_plugin_oms.utils import parse_oms_csv, parse_oms_dat
 from pydatalab.blocks.base import DataBlock
 from pydatalab.bokeh_plots import DATALAB_BOKEH_THEME, TOOLS
 from pydatalab.file_utils import get_file_info_by_id
