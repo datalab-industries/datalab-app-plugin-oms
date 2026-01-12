@@ -419,23 +419,18 @@ class OMSBlock(DataBlock):
                     LOGGER.warning(f"Failed to parse .dat file with num_species={num_species}: {e}")
                     oms_data = None
             else:
-                # Try to find companion CSV in the database
+                # Try to find companion CSV in the database, then auto-detect as fallback
                 csv_path = self._find_companion_csv(file_path)
-                if csv_path is not None and csv_path.exists():
-                    try:
-                        oms_data = parse_oms_dat(file_path, csv_filepath=csv_path)
-                    except ValueError as e:
-                        # Parsing failed with CSV
-                        parsing_error = str(e)
-                        LOGGER.warning(f"Failed to parse .dat file with CSV: {e}")
-                        oms_data = None
-                else:
-                    # Neither num_species nor CSV available - show message instead of error
-                    LOGGER.warning(
-                        "Cannot parse .dat file without num_species or companion CSV. "
-                        "Please enter the number of species in the input field."
-                    )
-                    oms_data = None  # Will trigger the message display below
+                try:
+                    # parse_oms_dat will:
+                    # 1. Use CSV if found (csv_path is not None)
+                    # 2. Auto-detect if CSV not found (csv_path is None)
+                    oms_data = parse_oms_dat(file_path, csv_filepath=csv_path)
+                except ValueError as e:
+                    # Parsing failed (CSV error, auto-detection failed, etc.)
+                    parsing_error = str(e)
+                    LOGGER.warning(f"Failed to parse .dat file: {e}")
+                    oms_data = None
         elif ext == ".exp":
             # .exp files don't contain the actual concentration data,
             # only quality/status codes, so we can't plot them directly.
