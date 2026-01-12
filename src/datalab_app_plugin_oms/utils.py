@@ -15,6 +15,76 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pydatalab.logger import LOGGER
+
+
+def _auto_detect_num_species(
+    total_records: int, data: bytes, first_v1: int, max_species: int = 20
+) -> int | None:
+    """
+    Auto-detect the number of species by testing which configuration produces
+    the smoothest/most stable signal.
+
+    Args:
+        total_records: Total number of V1 records in the DAT file
+        data: Raw binary data from the DAT file
+        first_v1: Position of the first V1 marker
+        max_species: Maximum number of species to test (default 20)
+
+    Returns:
+        The detected number of species (excluding vacuum), or None if detection fails
+    """
+    # Find all valid divisors (records_per_timepoint values that divide evenly)
+    valid_configs = []
+    for records_per_timepoint in range(2, max_species + 2):  # +1 for vacuum, so 2 to max_species+1
+        if total_records % records_per_timepoint == 0:
+            num_species = records_per_timepoint - 1  # -1 for vacuum
+            num_timepoints = total_records // records_per_timepoint
+            valid_configs.append((num_species, num_timepoints, records_per_timepoint))
+
+    if not valid_configs:
+        return None
+
+    # If only one valid configuration, return it
+    if len(valid_configs) == 1:
+        return valid_configs[0][0]
+
+    # Multiple valid configurations - analyze each to find the smoothest
+    config_scores = []
+
+    for num_species, num_timepoints, records_per_timepoint in valid_configs:
+        # Parse the data with this configuration
+        values = []
+        pos = first_v1
+        for _ in range(total_records):
+            value_pos = pos + 38
+            value = struct.unpack("<d", data[value_pos : value_pos + 8])[0]
+            values.append(value)
+            pos += 46
+
+        # Reshape into timepoints x species
+        values_array = np.array(values).reshape(num_timepoints, records_per_timepoint)
+
+        # Calculate smoothness score for each species (column)
+        # Lower score = smoother signal = more likely correct
+        total_deviation = 0
+        for species_idx in range(records_per_timepoint):
+            species_values = values_array[:, species_idx]
+            # Calculate standard deviation of differences (measure of smoothness)
+            if len(species_values) > 1:
+                diffs = np.diff(species_values)
+                deviation = np.std(diffs)
+                total_deviation += deviation
+
+        # Average deviation across all species
+        avg_deviation = total_deviation / records_per_timepoint
+
+        config_scores.append((num_species, avg_deviation))
+
+    LOGGER.debug(f"Smoothness calculated: {config_scores}")
+    # Choose configuration with lowest average deviation (smoothest signals)
+    config_scores.sort(key=lambda x: x[1])  # Sort by deviation ascending
+    return config_scores[0][0]
 
 
 def parse_oms_dat(
@@ -76,26 +146,7 @@ def parse_oms_dat(
     else:
         csv_filepath = Path(csv_filepath)
 
-    # Try to load the CSV file for both species count and name matching
-    if csv_filepath.exists():
-        csv_data = parse_oms_csv(csv_filepath)
-        csv_species_columns = [
-            col
-            for col in csv_data.columns
-            if col not in ["Time", "ms", "Time (s)", "Data Point", "timepoint"]
-        ]
-        num_species = len(csv_species_columns)
-        records_per_timepoint = num_species + 1  # +1 for vacuum
-    else:
-        # CSV file not found - use num_species if provided
-        if num_species is None:
-            raise FileNotFoundError(
-                f"Companion CSV file not found: {csv_filepath}\n"
-                f"Either provide a CSV file or specify num_species parameter."
-            )
-        records_per_timepoint = num_species + 1  # +1 for vacuum
-
-    # Read binary .dat file
+    # Read binary .dat file first to count records
     with open(filepath, "rb") as f:
         data = f.read()
 
@@ -113,8 +164,41 @@ def parse_oms_dat(
         total_records += 1
         pos += 46
 
-    # Calculate num_timepoints from total records and records_per_timepoint
+    # Determine species count with correct priority: num_species > CSV > auto-detect
+    if num_species is not None:
+        # Priority 1: User provided num_species - use it
+        records_per_timepoint = num_species + 1  # +1 for vacuum
 
+        # Still try to load CSV for name matching only
+        if csv_filepath.exists():
+            csv_data = parse_oms_csv(csv_filepath)
+            csv_species_columns = [
+                col
+                for col in csv_data.columns
+                if col not in ["Time", "ms", "Time (s)", "Data Point", "timepoint"]
+            ]
+    elif csv_filepath.exists():
+        # Priority 2: CSV file exists - use it for species count and name matching
+        csv_data = parse_oms_csv(csv_filepath)
+        csv_species_columns = [
+            col
+            for col in csv_data.columns
+            if col not in ["Time", "ms", "Time (s)", "Data Point", "timepoint"]
+        ]
+        num_species = len(csv_species_columns)
+        records_per_timepoint = num_species + 1  # +1 for vacuum
+    else:
+        # Priority 3: No num_species and no CSV - try auto-detection
+        detected_num_species = _auto_detect_num_species(total_records, data, first_v1)
+        if detected_num_species is None:
+            raise ValueError(
+                f"Could not auto-detect number of species from {total_records} records.\n"
+                f"Please provide either a CSV file or specify num_species parameter."
+            )
+        num_species = detected_num_species
+        records_per_timepoint = num_species + 1
+
+    # Validate configuration
     if total_records % records_per_timepoint != 0:
         raise ValueError(
             f"Total records ({total_records}) is not evenly divisible by "
