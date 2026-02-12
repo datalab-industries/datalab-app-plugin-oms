@@ -74,20 +74,66 @@ class OMSBlock(DataBlock):
         Updates self.data with the user-inputted number of species for .dat file parsing
 
         Args:
-            num_species: integer or 'clear' to remove the stored value
+            num_species: positive integer
         """
-        if num_species == "clear":
-            LOGGER.debug("Clearing num_species")
-            self.data.pop("num_species", None)
-        else:
-            try:
-                num_species_int = int(num_species)
-                if num_species_int < 1:
-                    raise ValueError("Number of species must be at least 1")
-                LOGGER.debug(f"Setting num_species to {num_species_int}")
-                self.data["num_species"] = num_species_int
-            except ValueError as e:
-                raise ValueError(f"Invalid num_species. Must be a positive integer or 'clear': {e}")
+        try:
+            num_species_int = int(num_species)
+            if num_species_int < 1:
+                raise ValueError("Number of species must be at least 1")
+            LOGGER.debug(f"Setting num_species to {num_species_int}")
+            self.data["num_species"] = num_species_int
+        except ValueError as e:
+            raise ValueError(f"Invalid num_species. Must be a positive integer: {e}")
+
+    @event()
+    def set_species_names(self, species_names):
+        """
+        Updates self.data with user-inputted species names for .dat file parsing.
+
+        Args:
+            species_names: comma-separated string of species names
+        """
+        names = [name.strip() for name in species_names.split(",") if name.strip()]
+        if not names:
+            raise ValueError("No valid species names provided")
+        LOGGER.debug(f"Setting species_names to {names}")
+        self.data["species_names"] = names
+        self.data["num_species"] = len(names)
+
+    @event()
+    def reset_species_settings(self, **kwargs):
+        """Clears both num_species and species_names from stored data.
+
+        Uses empty list / 0 rather than None because to_web() strips None values
+        (exclude_none=True) and the frontend uses Object.assign which won't delete
+        keys missing from the response.
+        """
+        LOGGER.debug("Resetting species settings")
+        self.data["num_species"] = 0
+        self.data["species_names"] = []
+
+    def _make_reset_button(self) -> Button:
+        """Create a reset button that clears num_species and species_names."""
+        reset_button = Button(
+            label="Reset species settings",
+            button_type="warning",
+            width_policy="min",
+            margin=(20, 5, 10, 5),
+        )
+        reset_button.js_on_click(
+            CustomJS(
+                code=f"""
+const block_event = new CustomEvent('block-event', {{
+    detail: {{
+        block_id: '{self.block_id}',
+        event_name: 'reset_species_settings',
+    }}, bubbles: true
+}});
+document.dispatchEvent(block_event);
+"""
+            )
+        )
+        return reset_button
 
     def _create_species_input_widget(
         self, error_message: str | None = None
@@ -100,50 +146,36 @@ class OMSBlock(DataBlock):
         Returns:
             bokeh.layouts.layout: Bokeh layout with instructions and input widget
         """
-        # Get current stored value
+        # Get current stored values
         current_num_species = self.data.get("num_species", "")
-        current_text = str(current_num_species) if current_num_species else "Not set"
+        current_num_text = str(current_num_species) if current_num_species else "Not set"
+        current_species_names = self.data.get("species_names", None)
+        current_names_text = (
+            ", ".join(current_species_names) if current_species_names else "Not set"
+        )
 
-        # Create instruction message with error if present
+        # Create compact instruction message
         if error_message:
             instruction_text = (
-                f'<p style="font-size:16px; color:#d9534f;"><b>Error parsing .dat file</b></p>'
-                f'<p style="font-size:14px; color:#d9534f;"><b>Error:</b> {error_message}</p>'
-                f'<p style="font-size:14px;">Please correct the number of species below and refresh the page.</p>'
+                f'<p style="color:#d9534f;"><b>Error parsing .dat file:</b> {error_message}</p>'
+                f"<p>Correct the number of species or enter species names below, then refresh.</p>"
             )
         else:
             instruction_text = (
-                '<p style="font-size:16px; color:#d9534f;"><b>Cannot parse .dat file</b></p>'
-                '<p style="font-size:14px;">To parse this .dat file, you must either:</p>'
-                '<ul style="font-size:14px;">'
-                "<li>Enter the number of species below, OR</li>"
-                "<li>Upload a companion .csv file with the same base name</li>"
-                "</ul>"
-                '<p style="font-size:14px;">After entering the number of species and pressing Enter, '
-                "refresh the page to generate the plot.</p>"
+                '<p style="color:#d9534f;"><b>Cannot parse .dat file.</b></p>'
+                "<p>Enter the number of species (or species names) below, then refresh. "
+                "Alternatively, upload a companion .csv file.</p>"
             )
 
-        instruction_div = Div(text=instruction_text, visible=True, sizing_mode="stretch_width")
-
-        # Create input widget
-        species_input_title = Div(
-            text='<p style="font-size:14px;"><b>Number of Species for .dat file parsing</b></p>'
-            "Enter the number of chemical species being measured (excluding vacuum measurement).<br>"
-            'Enter "clear" to remove stored value.',
-            visible=True,
+        instruction_div = Div(
+            text=instruction_text, visible=True, sizing_mode="stretch_width", margin=(5, 5, 0, 5)
         )
 
         species_input = TextInput(
-            value="", title="Number of species (excluding vacuum):", visible=True
+            value="",
+            title=f"Number of species, excl. vacuum (current: {current_num_text}):",
         )
-
-        species_display_title = Div(
-            text='<p style="font-size:14px;"><b>Currently stored value</b></p>', visible=True
-        )
-
-        species_display = Div(text=current_text, style={"font-size": "16px"}, visible=True)
-
-        # Link input to display and trigger callback
+        species_display = Div(text=current_num_text, visible=False)
         species_input.js_link("value", species_display, "text")
         species_display.js_on_change(
             "text",
@@ -154,11 +186,33 @@ class OMSBlock(DataBlock):
             ),
         )
 
-        species_current = column(children=[species_display_title, species_display])
-        species_layout = row(children=[species_input, species_current])
+        names_input = TextInput(
+            value="",
+            title=f"Species names, comma-separated, excl. vacuum (current: {current_names_text}):",
+        )
+        names_display = Div(text=current_names_text, visible=False)
+        names_input.js_link("value", names_display, "text")
+        names_display.js_on_change(
+            "text",
+            CustomJS(
+                code=generate_js_callback_single_float_parameter(
+                    "set_species_names", "species_names", self.block_id, throttled=False
+                )
+            ),
+        )
+
+        reset_button = self._make_reset_button()
 
         layout = column(
-            instruction_div, species_input_title, species_layout, sizing_mode="stretch_width"
+            children=[
+                instruction_div,
+                species_input,
+                names_input,
+                reset_button,
+                species_display,
+                names_display,
+            ],
+            sizing_mode="stretch_width",
         )
 
         return layout
@@ -318,32 +372,19 @@ class OMSBlock(DataBlock):
 
         # Add species number input for .dat files (if requested)
         if show_species_input:
-            # Get current stored value
+            # Get current stored values
             current_num_species = self.data.get("num_species", "")
-            current_text = (
-                str(current_num_species) if current_num_species else "Not set (will use CSV file)"
-            )
-
-            # Create input widget
-            species_input_title = Div(
-                text='<p style="font-size:14px;"><b>Number of Species for .dat file parsing</b></p>'
-                "Enter the number of chemical species being measured (excluding vacuum measurement).<br>"
-                "If not set, will attempt to use companion CSV file to auto-detect.<br>"
-                'Enter "clear" to remove stored value.',
-                visible=True,
+            current_num_text = str(current_num_species) if current_num_species else "Not set"
+            current_species_names = self.data.get("species_names", None)
+            current_names_text = (
+                ", ".join(current_species_names) if current_species_names else "Not set"
             )
 
             species_input = TextInput(
-                value="", title="Number of species (excluding vacuum):", visible=True
+                value="",
+                title=f"Number of species, excl. vacuum (current: {current_num_text}):",
             )
-
-            species_display_title = Div(
-                text='<p style="font-size:14px;"><b>Currently stored value</b></p>', visible=True
-            )
-
-            species_display = Div(text=current_text, style={"font-size": "16px"}, visible=True)
-
-            # Link input to display and trigger callback
+            species_display = Div(text=current_num_text, visible=False)
             species_input.js_link("value", species_display, "text")
             species_display.js_on_change(
                 "text",
@@ -354,19 +395,38 @@ class OMSBlock(DataBlock):
                 ),
             )
 
-            species_current = column(children=[species_display_title, species_display])
-            species_layout = row(children=[species_input, species_current])
+            names_input = TextInput(
+                value="",
+                title=f"Species names, comma-separated, excl. vacuum (current: {current_names_text}):",
+            )
+            names_display = Div(text=current_names_text, visible=False)
+            names_input.js_link("value", names_display, "text")
+            names_display.js_on_change(
+                "text",
+                CustomJS(
+                    code=generate_js_callback_single_float_parameter(
+                        "set_species_names", "species_names", self.block_id, throttled=False
+                    )
+                ),
+            )
+
+            reset_button = self._make_reset_button()
 
             layout = column(
-                controls_layout,
-                p_linear,
-                p_log,
-                species_input_title,
-                species_layout,
-                sizing_mode="scale_width",
+                children=[
+                    species_input,
+                    names_input,
+                    reset_button,
+                    species_display,
+                    names_display,
+                    controls_layout,
+                    p_linear,
+                    p_log,
+                ],
+                sizing_mode="stretch_width",
             )
         else:
-            layout = column(controls_layout, p_linear, p_log, sizing_mode="scale_width")
+            layout = column(controls_layout, p_linear, p_log, sizing_mode="stretch_width")
 
         return layout
 
@@ -397,9 +457,15 @@ class OMSBlock(DataBlock):
 
         file_path = Path(file_info["location"])
 
-        # Get user-specified num_species if available
-        num_species = self.data.get("num_species", None)
+        # Get user-specified num_species and species_names if available
+        # Falsy values (0, [], None) are treated as "not set"
+        num_species = self.data.get("num_species", None) or None
+        species_names = self.data.get("species_names", None) or None
         show_species_input = False
+
+        # If species_names is set but num_species is not, derive it
+        if species_names and num_species is None:
+            num_species = len(species_names)
 
         # Track parsing errors to show in UI
         parsing_error = None
@@ -412,7 +478,9 @@ class OMSBlock(DataBlock):
             # Try to parse with num_species if provided, otherwise fallback to CSV
             if num_species is not None:
                 try:
-                    oms_data = parse_oms_dat(file_path, num_species=num_species)
+                    oms_data = parse_oms_dat(
+                        file_path, num_species=num_species, species_names=species_names
+                    )
                 except ValueError as e:
                     # Parsing failed - likely wrong num_species
                     parsing_error = str(e)
