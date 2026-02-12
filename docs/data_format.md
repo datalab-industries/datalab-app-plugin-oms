@@ -1,6 +1,6 @@
 # OMS (Omnistar Mass Spectrometer) File Formats
 
-This directory contains example data from an Omnistar Mass Spectrometer in three formats.
+This directory contains example data from a Mass Spectrometer in three formats.
 
 ## File Formats
 
@@ -87,5 +87,5 @@ csv_df = parse_oms_csv("2025_11_21_kdj_354_F.csv")
 
 - Values are in scientific notation (e.g., 1.33121e-09)
 - The .dat and .exp files have an additional measurement (record 0) that is not exported to CSV
-- This appears to be total pressure or a reference measurement (~2× the sum of all species concentrations)
+- This appears to be "vacuum"
 - The species order differs between .dat (O2, Ar, CO/N2, H2, C2H2, CO2) and CSV (CO2, O2, Ar, CO/N2, H2, C2H2)
