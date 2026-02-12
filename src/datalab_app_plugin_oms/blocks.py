@@ -69,12 +69,12 @@ class OMSBlock(DataBlock):
         return None
 
     @event()
-    def set_num_species(self, num_species):
+    def set_num_species(self, num_species: str):
         """
         Updates self.data with the user-inputted number of species for .dat file parsing
 
         Args:
-            num_species: positive integer
+            num_species: positive integer as a string representing the number of species (excluding vacuum) in the .dat file
         """
         try:
             num_species_int = int(num_species)
@@ -86,7 +86,7 @@ class OMSBlock(DataBlock):
             raise ValueError(f"Invalid num_species. Must be a positive integer: {e}")
 
     @event()
-    def set_species_names(self, species_names):
+    def set_species_names(self, species_names: str):
         """
         Updates self.data with user-inputted species names for .dat file parsing.
 
