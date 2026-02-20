@@ -29,6 +29,7 @@ dependencies = [
     "pandas ~= 2.2",
     "numpy ~= 1.26",  # Match main datalab - bokeh 2.4 is incompatible with numpy 2.x
     "scipy ~= 1.13",
+    "datalab-server[apps] ~= 0.6",
 ]
 
 [project.urls]
