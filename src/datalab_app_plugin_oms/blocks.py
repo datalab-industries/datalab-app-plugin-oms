@@ -116,9 +116,9 @@ class OMSBlock(DataBlock):
         """Create a reset button that clears num_species and species_names."""
         reset_button = Button(
             label="Reset species settings",
-            button_type="warning",
+            button_type="primary",
             width_policy="min",
-            margin=(20, 5, 10, 5),
+            margin=(15, 5, 10, 5),
         )
         reset_button.js_on_click(
             CustomJS(
@@ -344,7 +344,7 @@ document.dispatchEvent(block_event);
 
         # Add log/linear scale toggle button
         scale_button = Button(
-            label="Log scale", button_type="default", width_policy="min", margin=(2, 5, 2, 5)
+            label="Log scale", button_type="primary", width_policy="min", margin=(2, 5, 2, 5)
         )
 
         # Callback to switch which plot is visible (bokeh can't dynamically change scale as far as I'm aware)
@@ -355,12 +355,12 @@ document.dispatchEvent(block_event);
                     p_linear.visible = false;
                     p_log.visible = true;
                     btn.label = 'Linear scale';
-                    btn.button_type = 'default';
+                    btn.button_type = 'primary';
                 } else {
                     p_linear.visible = true;
                     p_log.visible = false;
                     btn.label = 'Log scale';
-                    btn.button_type = 'default';
+                    btn.button_type = 'primary';
                 }
             """,
         )
