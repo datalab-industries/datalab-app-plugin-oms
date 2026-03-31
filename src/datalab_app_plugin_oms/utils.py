@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from pydatalab.logger import LOGGER
+from scipy.signal import savgol_filter
 
 
 def _auto_detect_num_species(
@@ -444,3 +445,168 @@ def parse_oms_csv(filename: str | Path, auto_detect_header: bool = True) -> pd.D
         oms_data["Time (s)"] = oms_data["ms"] / 1000.0
 
     return oms_data
+
+
+def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
+    """
+    Parse calibration slope and intercept values from an OMS calibration .xlsm file.
+
+    Reads Sheet 1 of the workbook, which contains linear calibration data mapping
+    OMS partial pressure (Torr) to species percentage::
+
+        y = Pressure / Torr  |  x = % O2   |  ...  |  y = Pressure / Torr  |  x = % CO2
+        ...data rows...
+        Slope                |  <value>     |  ...  |  Slope                |  <value>
+        Intercept            |  <value>     |  ...  |  Intercept            |  <value>
+
+    Species are detected from headers of the form ``x = % <Species>``.
+    The slope and intercept are taken from rows 7 and 8 of the same column.
+
+    Args:
+        filepath: Path to the .xlsm calibration file.
+
+    Returns:
+        Dict mapping species name to calibration parameters, e.g.::
+
+            {"O2": {"slope": 9.038e-8, "intercept": 1.532e-9},
+             "CO2": {"slope": 1.165e-6, "intercept": -3.157e-9}}
+
+    Raises:
+        ValueError: If no calibration species can be found in the file.
+    """
+    filepath = Path(filepath)
+
+    # Read sheet 1 with no header so we can inspect all rows by index
+    df = pd.read_excel(filepath, sheet_name=0, header=None)
+
+    # Row 0 (Excel row 1): find columns whose value matches "x = % <Species>"
+    header_row = df.iloc[0]
+    calibration: dict[str, dict[str, float]] = {}
+
+    for col_idx, val in header_row.items():
+        if not isinstance(val, str):
+            continue
+        val_stripped = val.strip()
+        if not val_stripped.startswith("x = %"):
+            continue
+        species = val_stripped[len("x = %") :].strip()
+        slope = df.iloc[6, col_idx]  # Row 7 (0-indexed: 6)
+        intercept = df.iloc[7, col_idx]  # Row 8 (0-indexed: 7)
+        if pd.isna(slope) or pd.isna(intercept):
+            LOGGER.warning(
+                f"Calibration: missing slope/intercept for '{species}' in column {col_idx} — skipping."
+            )
+            continue
+        calibration[species] = {"slope": float(slope), "intercept": float(intercept)}
+        LOGGER.debug(f"Calibration: {species} slope={slope}, intercept={intercept}")
+
+    if not calibration:
+        raise ValueError(
+            f"No calibration species found in {filepath.name}. "
+            "Expected headers of the form 'x = % <Species>' in row 1 of Sheet 1."
+        )
+
+    return calibration
+
+
+def apply_calibration(
+    oms_df: pd.DataFrame,
+    calibration: dict[str, dict[str, float]],
+    flow_rate: float = 1.0,
+    T: float = 298.0,
+    P_total: float = 1e5,
+) -> tuple[pd.DataFrame | None, dict[str, dict[str, float]]]:
+    """
+    Convert OMS partial-pressure data to nmol/s using calibration slope/intercept values.
+
+    Conversion chain (per species, per timepoint):
+
+    1. Fraction: ``pct = (P_torr - intercept) / slope``
+    2. Volumetric flow: ``mL/min = flow_rate * pct``
+    3. SI flow: ``m³/s = mL/min × 1e-6 / 60``
+    4. Molar flow: ``mol/s = P_total × m³/s / (R × T)``  (ideal gas PV = nRT)
+    5. Scaled: ``nmol/s = mol/s × 1e9``
+
+    Negative values are preserved — a value below zero indicates the species partial
+    pressure is below the calibration baseline (e.g. the species is being consumed).
+
+    Integration uses the trapezoidal rule over ``Time (s)`` to give total nmol.
+
+    Args:
+        oms_df: DataFrame from :func:`parse_oms_csv` — must contain a ``Time (s)``
+            column and species pressure columns in Torr.
+        calibration: Dict from :func:`parse_calibration_xlsm`.
+        flow_rate: Total carrier gas flow rate in mL/min (default 1.0).
+        T: Temperature in Kelvin (default 298.0 K).
+        P_total: Total pressure in Pa (default 1e5 Pa = 1 bar).
+
+    Returns:
+        Tuple of ``(nmol_df, summary)`` where:
+
+        - ``nmol_df``: DataFrame with ``Time (s)`` and ``<Species>_nmol_s`` columns,
+          or ``None`` if no species overlap between calibration and OMS data.
+        - ``summary``: ``{species: {"peak_flux_nmol_s": float, "total_nmol": float}}``.
+    """
+    _R = 8.314  # J / (mol·K)
+
+    if "Time (s)" not in oms_df.columns:
+        return None, {}
+
+    time_s = oms_df["Time (s)"].to_numpy(dtype=float)
+    result_cols: dict[str, np.ndarray] = {}
+    summary: dict[str, dict[str, float]] = {}
+
+    for species, cal in calibration.items():
+        if species not in oms_df.columns:
+            LOGGER.debug(f"Calibration species '{species}' not found in OMS data — skipping.")
+            continue
+        p_torr = oms_df[species].to_numpy(dtype=float)
+        # In example excel sheet the intercept is added rather than subtracted as expected for y=mx+c
+        if species == "CO2":
+            pct = (p_torr + cal["intercept"]) / cal["slope"]
+        else:
+            pct = (p_torr - cal["intercept"]) / cal["slope"]
+        mol_s = P_total * (flow_rate * pct * 1e-6 / 60.0) / (_R * T)
+        nmol_s = mol_s * 1e9
+        raw_col_name = f"{species}_raw_nmol_s"
+        result_cols[raw_col_name] = nmol_s
+        nmol_s, baseline = percentile_envelope_baseline(nmol_s, window_size=101, percentile=5)
+        col_name = f"{species}_nmol_s"
+        baseline_col_name = f"{species}_baseline"
+        result_cols[col_name] = nmol_s
+        result_cols[baseline_col_name] = baseline
+
+        peak_flux = float(nmol_s.max())
+        total_nmol = float(np.trapz(nmol_s, time_s))
+        summary[species] = {"peak_flux_nmol_s": peak_flux, "total_nmol": total_nmol}
+        LOGGER.debug(
+            f"Calibration applied: {species} peak={peak_flux:.4g} nmol/s, total={total_nmol:.4g} nmol"
+        )
+
+    if not result_cols:
+        return None, {}
+
+    nmol_df = pd.DataFrame({"Time (s)": time_s, **result_cols})
+    return nmol_df, summary
+
+
+def percentile_envelope_baseline(
+    signal, window_size=101, percentile=5, smooth=True, smooth_window=201, polyorder=2
+):
+    s = pd.Series(signal)
+
+    # Step 1: percentile envelope
+    baseline = (
+        s.rolling(window=window_size, center=True, min_periods=1)
+        .quantile(percentile / 100.0)
+        .values
+    )
+
+    # Step 2: optional smoothing
+    if smooth:
+        baseline = savgol_filter(baseline, smooth_window, polyorder)
+
+    # Step 3: subtract
+    corrected = signal - baseline
+
+    return corrected, baseline
