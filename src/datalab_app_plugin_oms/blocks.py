@@ -4,7 +4,17 @@ import bokeh.embed
 import pandas as pd
 from bokeh.events import DoubleTap
 from bokeh.layouts import column, row
-from bokeh.models import Button, CustomJS, Div, HoverTool, Legend, Panel, Tabs, TextInput
+from bokeh.models import (
+    BoxAnnotation,
+    Button,
+    CustomJS,
+    Div,
+    HoverTool,
+    Legend,
+    Panel,
+    Tabs,
+    TextInput,
+)
 from bokeh.palettes import Category10_10
 from bokeh.plotting import ColumnDataSource, figure
 from pydatalab.blocks.base import DataBlock, event, generate_js_callback_single_float_parameter
@@ -27,6 +37,13 @@ class OMSBlock(DataBlock):
     description = "Block for plotting OMS time series data."
     accepted_file_extensions: tuple[str, ...] = (".csv", ".dat", ".exp", ".xlsm")
     multi_file = True
+    defaults = {
+        "flow_rate": 1.0,
+        "temperature": 298.0,
+        "pressure": 1e5,
+        "rate_t_start": 0.0,
+        "rate_t_end": 1800.0,
+    }
 
     @property
     def plot_functions(self):
@@ -162,6 +179,36 @@ class OMSBlock(DataBlock):
             self.data["pressure"] = value
         except ValueError as e:
             raise ValueError(f"Invalid pressure. Must be a positive number in Pa: {e}")
+
+    @event()
+    def set_rate_t_start(self, rate_t_start: str):
+        """Set the start of the time window for initial rate calculation.
+
+        Args:
+            rate_t_start: Start time in seconds as a string. Must be non-negative.
+        """
+        try:
+            value = float(rate_t_start)
+            if value < 0:
+                raise ValueError("Start time must be non-negative")
+            self.data["rate_t_start"] = value
+        except ValueError as e:
+            raise ValueError(f"Invalid rate_t_start. Must be a non-negative number: {e}")
+
+    @event()
+    def set_rate_t_end(self, rate_t_end: str):
+        """Set the end of the time window for initial rate calculation.
+
+        Args:
+            rate_t_end: End time in seconds as a string. Must be positive.
+        """
+        try:
+            value = float(rate_t_end)
+            if value <= 0:
+                raise ValueError("End time must be positive")
+            self.data["rate_t_end"] = value
+        except ValueError as e:
+            raise ValueError(f"Invalid rate_t_end. Must be a positive number: {e}")
 
     def _create_error_div(self, message: str) -> bokeh.layouts.layout:
         """Return a simple Bokeh layout containing an error message."""
@@ -303,6 +350,8 @@ document.dispatchEvent(block_event);
         show_species_input: bool = False,
         nmol_df: pd.DataFrame | None = None,
         calibration_summary: dict | None = None,
+        rate_t_start: float = 0.0,
+        rate_t_end: float = 1800.0,
     ) -> bokeh.layouts.layout:
         """Formats OMS data for plotting in Bokeh with all species plotted and toggleable legends
 
@@ -564,6 +613,17 @@ document.dispatchEvent(block_event);
 
             def create_corrected_plot(y_axis_type):
                 p = _make_figure(y_axis_type, "nmol/s (corrected)")
+                p.add_layout(
+                    BoxAnnotation(
+                        left=rate_t_start,
+                        right=rate_t_end,
+                        fill_color="grey",
+                        fill_alpha=0.15,
+                        line_color="grey",
+                        line_dash="dashed",
+                        line_alpha=0.4,
+                    )
+                )
                 legend_items = []
                 for i, col in enumerate(nmol_species_cols):
                     color = colors[i % len(colors)]
@@ -596,9 +656,9 @@ document.dispatchEvent(block_event);
             )
 
             # Parameter inputs — built before the OMS plot so they appear above it
-            flow_rate_val = self.data.get("flow_rate") or 1.0
-            temperature_val = self.data.get("temperature") or 298.0
-            pressure_val = self.data.get("pressure") or 1e5
+            flow_rate_val = self.data["flow_rate"]
+            temperature_val = self.data["temperature"]
+            pressure_val = self.data["pressure"]
 
             fr_input, fr_display = self._make_param_input(
                 "Flow rate (mL/min)", flow_rate_val, "set_flow_rate", "flow_rate"
@@ -609,15 +669,25 @@ document.dispatchEvent(block_event);
             pres_input, pres_display = self._make_param_input(
                 "Pressure (Pa)", pressure_val, "set_pressure", "pressure"
             )
+            t_start_input, t_start_display = self._make_param_input(
+                "Rate window start (s)", rate_t_start, "set_rate_t_start", "rate_t_start"
+            )
+            t_end_input, t_end_display = self._make_param_input(
+                "Rate window end (s)", rate_t_end, "set_rate_t_end", "rate_t_end"
+            )
             param_inputs_row = row(
                 fr_input,
                 temp_input,
                 pres_input,
+                t_start_input,
+                t_end_input,
                 fr_display,
                 temp_display,
                 pres_display,
+                t_start_display,
+                t_end_display,
                 sizing_mode="stretch_width",
-                margin=(10, 0, 15, 0),
+                margin=(10, 0, 50, 0),
             )
             # Insert param inputs before the OMS plot (controls_layout is last in layout_children)
             layout_children.insert(-1, param_inputs_row)
@@ -627,14 +697,23 @@ document.dispatchEvent(block_event);
             for species, stats in calibration_summary.items():
                 peak = f"{stats['peak_flux_nmol_s']:.4g}"
                 total = f"{stats['total_nmol']:.4g}"
-                rows_html += f"<tr><td>{species}</td><td>{peak}</td><td>{total}</td></tr>"
+                initial_rate = stats.get("initial_rate_nmol_s")
+                rate_str = (
+                    f"{initial_rate:.4g}"
+                    if initial_rate is not None and not (initial_rate != initial_rate)
+                    else "N/A"
+                )
+                rows_html += (
+                    f"<tr><td>{species}</td><td>{peak}</td><td>{total}</td><td>{rate_str}</td></tr>"
+                )
             summary_div = Div(
                 text=(
                     "<b>Calibration Summary</b>"
                     '<table style="border-collapse:collapse;margin-top:6px">'
                     "<tr><th style='padding:2px 12px 2px 0'>Species</th>"
                     "<th style='padding:2px 12px 2px 0'>Peak flux (nmol/s)</th>"
-                    "<th style='padding:2px 0'>Total (nmol)</th></tr>"
+                    "<th style='padding:2px 12px 2px 0'>Total (nmol)</th>"
+                    f"<th style='padding:2px 0'>Initial rate {rate_t_start:.4g}–{rate_t_end:.4g} s (nmol/s)</th></tr>"
                     f"{rows_html}"
                     "</table>"
                 ),
@@ -755,12 +834,20 @@ document.dispatchEvent(block_event);
         calibration_summary = None
         if oms_data is not None and xlsm_files and ext == ".csv":
             try:
-                flow_rate = float(self.data.get("flow_rate") or 1.0)
-                temperature = float(self.data.get("temperature") or 298.0)
-                pressure = float(self.data.get("pressure") or 1e5)
+                flow_rate = float(self.data["flow_rate"])
+                temperature = float(self.data["temperature"])
+                pressure = float(self.data["pressure"])
+                rate_t_start = float(self.data["rate_t_start"])
+                rate_t_end = float(self.data["rate_t_end"])
                 calibration = parse_calibration_xlsm(xlsm_files[0])
                 nmol_df, calibration_summary = apply_calibration(
-                    oms_data, calibration, flow_rate, temperature, pressure
+                    oms_data,
+                    calibration,
+                    flow_rate,
+                    temperature,
+                    pressure,
+                    rate_t_start,
+                    rate_t_end,
                 )
             except Exception as e:
                 LOGGER.warning(f"Calibration failed: {e}")
@@ -771,6 +858,8 @@ document.dispatchEvent(block_event);
                 show_species_input=show_species_input,
                 nmol_df=nmol_df,
                 calibration_summary=calibration_summary,
+                rate_t_start=rate_t_start if "rate_t_start" in locals() else 0.0,
+                rate_t_end=rate_t_end if "rate_t_end" in locals() else 30.0,
             )
             self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
         elif show_species_input:
