@@ -405,6 +405,7 @@ dependencies = [
     { name = "bokeh" },
     { name = "datalab-server", extra = ["apps"] },
     { name = "numpy" },
+    { name = "openpyxl" },
     { name = "pandas" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -430,6 +431,7 @@ requires-dist = [
     { name = "bokeh", specifier = "~=2.4,<3.0" },
     { name = "datalab-server", extras = ["apps"], specifier = "~=0.6" },
     { name = "numpy", specifier = "~=1.26" },
+    { name = "openpyxl", specifier = "~=3.1" },
     { name = "pandas", specifier = "~=2.2" },
     { name = "scipy", specifier = "~=1.13" },
 ]
