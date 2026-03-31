@@ -849,6 +849,8 @@ document.dispatchEvent(block_event);
                     rate_t_start,
                     rate_t_end,
                 )
+                if calibration_summary:
+                    self.data["metadata"]["calibration_results"] = calibration_summary
             except Exception as e:
                 LOGGER.warning(f"Calibration failed: {e}")
 
@@ -858,8 +860,8 @@ document.dispatchEvent(block_event);
                 show_species_input=show_species_input,
                 nmol_df=nmol_df,
                 calibration_summary=calibration_summary,
-                rate_t_start=rate_t_start if "rate_t_start" in locals() else 0.0,
-                rate_t_end=rate_t_end if "rate_t_end" in locals() else 30.0,
+                rate_t_start=self.data["rate_t_start"],
+                rate_t_end=self.data["rate_t_end"],
             )
             self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
         elif show_species_input:
