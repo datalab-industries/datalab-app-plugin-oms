@@ -515,6 +515,8 @@ def apply_calibration(
     flow_rate: float = 1.0,
     T: float = 298.0,
     P_total: float = 1e5,
+    rate_t_start: float = 0.0,
+    rate_t_end: float = 1800.0,
 ) -> tuple[pd.DataFrame | None, dict[str, dict[str, float]]]:
     """
     Convert OMS partial-pressure data to nmol/s using calibration slope/intercept values.
@@ -578,7 +580,13 @@ def apply_calibration(
 
         peak_flux = float(nmol_s.max())
         total_nmol = float(np.trapz(nmol_s, time_s))
-        summary[species] = {"peak_flux_nmol_s": peak_flux, "total_nmol": total_nmol}
+        mask = (time_s >= rate_t_start) & (time_s <= rate_t_end)
+        initial_rate = float(nmol_s[mask].mean()) if mask.any() else float("nan")
+        summary[species] = {
+            "peak_flux_nmol_s": peak_flux,
+            "total_nmol": total_nmol,
+            "initial_rate_nmol_s": initial_rate,
+        }
         LOGGER.debug(
             f"Calibration applied: {species} peak={peak_flux:.4g} nmol/s, total={total_nmol:.4g} nmol"
         )
