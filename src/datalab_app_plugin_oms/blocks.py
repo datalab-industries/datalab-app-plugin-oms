@@ -1,10 +1,10 @@
-import os
 from pathlib import Path
 
 import bokeh.embed
 import pandas as pd
+from bokeh.events import DoubleTap
 from bokeh.layouts import column, row
-from bokeh.models import Button, CustomJS, Div, HoverTool, Legend, TextInput
+from bokeh.models import Button, CustomJS, Div, HoverTool, Legend, Panel, Tabs, TextInput
 from bokeh.palettes import Category10_10
 from bokeh.plotting import ColumnDataSource, figure
 from pydatalab.blocks.base import DataBlock, event, generate_js_callback_single_float_parameter
@@ -13,14 +13,20 @@ from pydatalab.file_utils import get_file_info_by_id
 from pydatalab.logger import LOGGER
 from pydatalab.mongo import flask_mongo
 
-from datalab_app_plugin_oms.utils import parse_oms_csv, parse_oms_dat
+from datalab_app_plugin_oms.utils import (
+    apply_calibration,
+    parse_calibration_xlsm,
+    parse_oms_csv,
+    parse_oms_dat,
+)
 
 
 class OMSBlock(DataBlock):
     blocktype = "oms"
     name = "OMS"
     description = "Block for plotting OMS time series data."
-    accepted_file_extensions: tuple[str, ...] = (".csv", ".dat", ".exp")
+    accepted_file_extensions: tuple[str, ...] = (".csv", ".dat", ".exp", ".xlsm")
+    multi_file = True
 
     @property
     def plot_functions(self):
@@ -111,6 +117,62 @@ class OMSBlock(DataBlock):
         LOGGER.debug("Resetting species settings")
         self.data["num_species"] = 0
         self.data["species_names"] = []
+
+    @event()
+    def set_flow_rate(self, flow_rate: str):
+        """Set the carrier gas flow rate used for nmol/s calibration.
+
+        Args:
+            flow_rate: Flow rate in mL/min as a string. Must be a positive number.
+        """
+        try:
+            value = float(flow_rate)
+            if value <= 0:
+                raise ValueError("Flow rate must be positive")
+            self.data["flow_rate"] = value
+        except ValueError as e:
+            raise ValueError(f"Invalid flow_rate. Must be a positive number: {e}")
+
+    @event()
+    def set_temperature(self, temperature: str):
+        """Set the temperature used for the ideal gas conversion.
+
+        Args:
+            temperature: Temperature in Kelvin as a string. Must be a positive number.
+        """
+        try:
+            value = float(temperature)
+            if value <= 0:
+                raise ValueError("Temperature must be positive")
+            self.data["temperature"] = value
+        except ValueError as e:
+            raise ValueError(f"Invalid temperature. Must be a positive number in Kelvin: {e}")
+
+    @event()
+    def set_pressure(self, pressure: str):
+        """Set the total pressure used for the ideal gas conversion.
+
+        Args:
+            pressure: Total pressure in Pa as a string. Must be a positive number.
+        """
+        try:
+            value = float(pressure)
+            if value <= 0:
+                raise ValueError("Pressure must be positive")
+            self.data["pressure"] = value
+        except ValueError as e:
+            raise ValueError(f"Invalid pressure. Must be a positive number in Pa: {e}")
+
+    def _create_error_div(self, message: str) -> bokeh.layouts.layout:
+        """Return a simple Bokeh layout containing an error message."""
+        return column(
+            Div(
+                text=f'<p style="color:#d9534f;"><b>Error:</b> {message}</p>',
+                sizing_mode="stretch_width",
+                margin=(5, 5, 5, 5),
+            ),
+            sizing_mode="stretch_width",
+        )
 
     def _make_reset_button(self) -> Button:
         """Create a reset button that clears num_species and species_names."""
@@ -217,8 +279,30 @@ document.dispatchEvent(block_event);
 
         return layout
 
+    def _make_param_input(self, title: str, current_val: float, event_name: str, param_name: str):
+        """Create a labelled TextInput wired to a block event via JS callback.
+
+        Returns a tuple of (input_widget, hidden_display_div) to be added to the layout.
+        """
+        text_input = TextInput(value="", title=f"{title} (current: {current_val})")
+        display = Div(text=str(current_val), visible=False)
+        text_input.js_link("value", display, "text")
+        display.js_on_change(
+            "text",
+            CustomJS(
+                code=generate_js_callback_single_float_parameter(
+                    event_name, param_name, self.block_id, throttled=False
+                )
+            ),
+        )
+        return text_input, display
+
     def _format_oms_plot(
-        self, oms_data: pd.DataFrame, show_species_input: bool = False
+        self,
+        oms_data: pd.DataFrame,
+        show_species_input: bool = False,
+        nmol_df: pd.DataFrame | None = None,
+        calibration_summary: dict | None = None,
     ) -> bokeh.layouts.layout:
         """Formats OMS data for plotting in Bokeh with all species plotted and toggleable legends
 
@@ -261,16 +345,17 @@ document.dispatchEvent(block_event);
         def create_plot(y_axis_type):
             p = figure(
                 sizing_mode="scale_width",
-                aspect_ratio=1.5,
+                height=250,
                 x_axis_label=x_label,
                 y_axis_label="Concentration",
-                tools=TOOLS,
+                tools=TOOLS + ", pan, wheel_zoom",
                 y_axis_type=y_axis_type,
             )
 
             p.toolbar.logo = "grey"
             p.xaxis.ticker.desired_num_ticks = 5
             p.yaxis.ticker.desired_num_ticks = 5
+            p.js_on_event(DoubleTap, CustomJS(args=dict(p=p), code="p.reset.emit()"))
 
             # Create an invisible dummy glyph for hover that won't be hidden by legend
             # Use mean concentration to stay within the data range
@@ -334,41 +419,14 @@ document.dispatchEvent(block_event);
 
             return p
 
-        # Create both linear and log plots
+        # Create both linear and log plots in tabs
         p_linear = create_plot("linear")
         p_log = create_plot("log")
-
-        # Set initial visibility
-        p_linear.visible = True
-        p_log.visible = False
-
-        # Add log/linear scale toggle button
-        scale_button = Button(
-            label="Log scale", button_type="primary", width_policy="min", margin=(2, 5, 2, 5)
+        scale_tabs = Tabs(
+            tabs=[Panel(child=p_linear, title="Linear"), Panel(child=p_log, title="Log")],
+            margin=(5, 0, 5, 0),
         )
-
-        # Callback to switch which plot is visible (bokeh can't dynamically change scale as far as I'm aware)
-        scale_callback = CustomJS(
-            args=dict(btn=scale_button, p_linear=p_linear, p_log=p_log),
-            code="""
-                if (btn.label === 'Log scale') {
-                    p_linear.visible = false;
-                    p_log.visible = true;
-                    btn.label = 'Linear scale';
-                    btn.button_type = 'primary';
-                } else {
-                    p_linear.visible = true;
-                    p_log.visible = false;
-                    btn.label = 'Log scale';
-                    btn.button_type = 'primary';
-                }
-            """,
-        )
-
-        scale_button.js_on_click(scale_callback)
-
-        # Create controls layout
-        controls_layout = row(scale_button, sizing_mode="scale_width", margin=(10, 0, 10, 0))
+        controls_layout = row(scale_tabs, sizing_mode="scale_width")
 
         # Add species number input for .dat files (if requested)
         if show_species_input:
@@ -412,101 +470,276 @@ document.dispatchEvent(block_event);
 
             reset_button = self._make_reset_button()
 
-            layout = column(
-                children=[
-                    species_input,
-                    names_input,
-                    reset_button,
-                    species_display,
-                    names_display,
-                    controls_layout,
-                    p_linear,
-                    p_log,
-                ],
-                sizing_mode="stretch_width",
-            )
+            layout_children = [
+                species_input,
+                names_input,
+                reset_button,
+                species_display,
+                names_display,
+                controls_layout,
+            ]
         else:
-            layout = column(controls_layout, p_linear, p_log, sizing_mode="stretch_width")
+            layout_children = [controls_layout]
 
-        return layout
+        # --- Calibration section (only when nmol data is available) ---
+        if nmol_df is not None and calibration_summary:
+            nmol_species_cols = [
+                c
+                for c in nmol_df.columns
+                if c != "Time (s)" and not c.endswith("_baseline") and not c.endswith("_raw_nmol_s")
+            ]
+            raw_species_cols = [c for c in nmol_df.columns if c.endswith("_raw_nmol_s")]
+            nmol_source = ColumnDataSource(nmol_df)
+
+            def _make_figure(y_axis_type, y_label):
+                p = figure(
+                    sizing_mode="scale_width",
+                    height=250,
+                    x_axis_label="Time (s)",
+                    y_axis_label=y_label,
+                    tools=TOOLS + ", pan, wheel_zoom",
+                    y_axis_type=y_axis_type,
+                )
+                p.toolbar.logo = "grey"
+                p.xaxis.ticker.desired_num_ticks = 5
+                p.yaxis.ticker.desired_num_ticks = 5
+                p.js_on_event(DoubleTap, CustomJS(args=dict(p=p), code="p.reset.emit()"))
+                return p
+
+            def _add_legend_and_hover(p, legend_items, hover_cols, dummy_col):
+                nmol_df[dummy_col] = nmol_df[hover_cols].mean(axis=1)
+                dummy = p.line(
+                    x="Time (s)", y=dummy_col, source=nmol_source, alpha=0, level="overlay"
+                )
+                legend = Legend(
+                    items=legend_items,
+                    click_policy="hide",
+                    background_fill_alpha=0.8,
+                    label_text_font_size="9pt",
+                    spacing=1,
+                    margin=5,
+                )
+                p.add_layout(legend, "right")
+                tooltips = [("Time (s)", "@{Time (s)}{0,0.0} s")]
+                formatters = {}
+                for col in hover_cols:
+                    label = col.replace("_raw_nmol_s", "").replace("_nmol_s", "")
+                    tooltips.append((f"{label} (nmol/s)", f"@{{{col}}}{{%0.4g}}"))
+                    formatters[f"@{{{col}}}"] = "printf"
+                p.add_tools(
+                    HoverTool(
+                        tooltips=tooltips,
+                        formatters=formatters,
+                        renderers=[dummy],
+                        mode="vline",
+                        line_policy="none",
+                    )
+                )
+
+            def create_raw_plot(y_axis_type):
+                p = _make_figure(y_axis_type, "nmol/s (raw)")
+                legend_items = []
+                for i, col in enumerate(raw_species_cols):
+                    color = colors[i % len(colors)]
+                    label = col.replace("_raw_nmol_s", "")
+                    line = p.line(
+                        x="Time (s)", y=col, source=nmol_source, color=color, line_width=2
+                    )
+                    circle = p.circle(x="Time (s)", y=col, source=nmol_source, color=color, size=4)
+                    legend_items.append((label, [line, circle]))
+                    baseline_col = f"{label}_baseline"
+                    if baseline_col in nmol_df.columns:
+                        bl = p.line(
+                            x="Time (s)",
+                            y=baseline_col,
+                            source=nmol_source,
+                            color=color,
+                            line_width=1,
+                            line_dash="dashed",
+                            alpha=0.6,
+                        )
+                        legend_items.append((f"{label} baseline", [bl]))
+                _add_legend_and_hover(p, legend_items, raw_species_cols, "_raw_mean")
+                return p
+
+            def create_corrected_plot(y_axis_type):
+                p = _make_figure(y_axis_type, "nmol/s (corrected)")
+                legend_items = []
+                for i, col in enumerate(nmol_species_cols):
+                    color = colors[i % len(colors)]
+                    label = col.replace("_nmol_s", "")
+                    line = p.line(
+                        x="Time (s)", y=col, source=nmol_source, color=color, line_width=2
+                    )
+                    circle = p.circle(x="Time (s)", y=col, source=nmol_source, color=color, size=4)
+                    legend_items.append((label, [line, circle]))
+                _add_legend_and_hover(p, legend_items, nmol_species_cols, "_corrected_mean")
+                return p
+
+            p_raw_linear = create_raw_plot("linear")
+            p_raw_log = create_raw_plot("log")
+            p_corr_linear = create_corrected_plot("linear")
+            p_corr_log = create_corrected_plot("log")
+            raw_tabs = Tabs(
+                tabs=[
+                    Panel(child=p_raw_linear, title="Linear"),
+                    Panel(child=p_raw_log, title="Log"),
+                ],
+                margin=(5, 0, 5, 0),
+            )
+            corr_tabs = Tabs(
+                tabs=[
+                    Panel(child=p_corr_linear, title="Linear"),
+                    Panel(child=p_corr_log, title="Log"),
+                ],
+                margin=(5, 0, 5, 0),
+            )
+
+            # Parameter inputs — built before the OMS plot so they appear above it
+            flow_rate_val = self.data.get("flow_rate") or 1.0
+            temperature_val = self.data.get("temperature") or 298.0
+            pressure_val = self.data.get("pressure") or 1e5
+
+            fr_input, fr_display = self._make_param_input(
+                "Flow rate (mL/min)", flow_rate_val, "set_flow_rate", "flow_rate"
+            )
+            temp_input, temp_display = self._make_param_input(
+                "Temperature (K)", temperature_val, "set_temperature", "temperature"
+            )
+            pres_input, pres_display = self._make_param_input(
+                "Pressure (Pa)", pressure_val, "set_pressure", "pressure"
+            )
+            param_inputs_row = row(
+                fr_input,
+                temp_input,
+                pres_input,
+                fr_display,
+                temp_display,
+                pres_display,
+                sizing_mode="stretch_width",
+                margin=(10, 0, 15, 0),
+            )
+            # Insert param inputs before the OMS plot (controls_layout is last in layout_children)
+            layout_children.insert(-1, param_inputs_row)
+
+            # Summary table
+            rows_html = ""
+            for species, stats in calibration_summary.items():
+                peak = f"{stats['peak_flux_nmol_s']:.4g}"
+                total = f"{stats['total_nmol']:.4g}"
+                rows_html += f"<tr><td>{species}</td><td>{peak}</td><td>{total}</td></tr>"
+            summary_div = Div(
+                text=(
+                    "<b>Calibration Summary</b>"
+                    '<table style="border-collapse:collapse;margin-top:6px">'
+                    "<tr><th style='padding:2px 12px 2px 0'>Species</th>"
+                    "<th style='padding:2px 12px 2px 0'>Peak flux (nmol/s)</th>"
+                    "<th style='padding:2px 0'>Total (nmol)</th></tr>"
+                    f"{rows_html}"
+                    "</table>"
+                ),
+                sizing_mode="stretch_width",
+                margin=(10, 5, 5, 5),
+            )
+
+            layout_children += [
+                raw_tabs,
+                corr_tabs,
+                summary_div,
+            ]
+
+        return column(children=layout_children, sizing_mode="stretch_width")
 
     def generate_oms_plot(self):
-        """Generate OMS plot from uploaded file
+        """Generate OMS plot from uploaded file(s).
 
-        Supports three file formats:
+        Supports three OMS data formats:
         - .csv: Manual export with headers (standard format)
         - .dat: Binary live-updating format (46-byte records)
         - .exp: ASCII live-updating format (space-separated integers)
 
-        The .dat and .exp formats may contain more timepoints than CSV if they
-        were still updating when the CSV was exported.
+        Optionally accepts a .xlsm calibration file alongside the OMS data file.
+        When a .xlsm is present with a .csv, nmol/s conversion and integration are shown.
+        Calibration is not supported for .dat files (no time axis).
         """
-        file_info = None
-        oms_data = None
+        file_ids = []
+        if self.data.get("file_ids"):
+            file_ids = self.data["file_ids"]
+        elif self.data.get("file_id"):
+            file_ids = [self.data["file_id"]]
 
-        if "file_id" not in self.data:
+        if not file_ids:
             return
 
-        file_info = get_file_info_by_id(self.data["file_id"], update_if_live=True)
-        ext = os.path.splitext(file_info["location"].split("/")[-1])[-1].lower()
+        file_infos = [get_file_info_by_id(id_, update_if_live=True) for id_ in file_ids]
+        if not file_infos:
+            raise RuntimeError("No file information found for the provided file IDs.")
 
-        if ext not in self.accepted_file_extensions:
-            raise ValueError(
-                f"Extension not in recognised extensions: {self.accepted_file_extensions}"
+        filenames = [Path(info["location"]) for info in file_infos]
+
+        xlsm_files = [f for f in filenames if f.suffix.lower() == ".xlsm"]
+        data_files = [f for f in filenames if f.suffix.lower() in (".csv", ".dat", ".exp")]
+
+        # Error cases when a calibration file is present
+        if xlsm_files and not data_files:
+            layout = self._create_error_div(
+                "Calibration file detected. Please also attach a .csv data file to enable plotting."
             )
+            self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
+            return
 
-        file_path = Path(file_info["location"])
+        if xlsm_files and data_files and all(f.suffix.lower() != ".csv" for f in data_files):
+            layout = self._create_error_div(
+                ".dat files do not have a time axis so calibration cannot be applied. "
+                "Please also attach the corresponding .csv file."
+            )
+            self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
+            return
+
+        # Pick the data file: prefer .csv, then .dat, then .exp
+        csv_files = [f for f in data_files if f.suffix.lower() == ".csv"]
+        dat_files = [f for f in data_files if f.suffix.lower() == ".dat"]
+        exp_files = [f for f in data_files if f.suffix.lower() == ".exp"]
+
+        file_path = (csv_files or dat_files or exp_files)[0]
+        ext = file_path.suffix.lower()
 
         # Get user-specified num_species and species_names if available
         # Falsy values (0, [], None) are treated as "not set"
         num_species = self.data.get("num_species", None) or None
         species_names = self.data.get("species_names", None) or None
         show_species_input = False
+        parsing_error = None
+        oms_data = None
 
-        # If species_names is set but num_species is not, derive it
         if species_names and num_species is None:
             num_species = len(species_names)
-
-        # Track parsing errors to show in UI
-        parsing_error = None
 
         if ext == ".csv":
             oms_data = parse_oms_csv(file_path)
         elif ext == ".dat":
-            show_species_input = True  # Show input widget for .dat files
-
-            # Try to parse with num_species if provided, otherwise fallback to CSV
+            show_species_input = True
             if num_species is not None:
                 try:
                     oms_data = parse_oms_dat(
                         file_path, num_species=num_species, species_names=species_names
                     )
                 except ValueError as e:
-                    # Parsing failed - likely wrong num_species
                     parsing_error = str(e)
                     LOGGER.warning(f"Failed to parse .dat file with num_species={num_species}: {e}")
                     oms_data = None
             else:
-                # Try to find companion CSV in the database, then auto-detect as fallback
                 csv_path = self._find_companion_csv(file_path)
                 try:
-                    # parse_oms_dat will:
-                    # 1. Use CSV if found (csv_path is not None)
-                    # 2. Auto-detect if CSV not found (csv_path is None)
                     oms_data = parse_oms_dat(file_path, csv_filepath=csv_path)
                 except ValueError as e:
-                    # Parsing failed (CSV error, auto-detection failed, etc.)
                     parsing_error = str(e)
                     LOGGER.warning(f"Failed to parse .dat file: {e}")
                     oms_data = None
         elif ext == ".exp":
-            # .exp files don't contain the actual concentration data,
-            # only quality/status codes, so we can't plot them directly.
-            # Try to find a corresponding .dat or .csv file instead.
             base_path = file_path.with_suffix("")
             dat_path = base_path.with_suffix(".dat")
             csv_path = base_path.with_suffix(".csv")
-
             if dat_path.exists():
                 oms_data = parse_oms_dat(dat_path)
             elif csv_path.exists():
@@ -514,13 +747,32 @@ document.dispatchEvent(block_event);
             else:
                 raise ValueError(
                     f".exp file '{file_path.name}' found, but cannot be plotted directly. "
-                    f"Please upload the corresponding .dat or .csv file instead."
+                    "Please upload the corresponding .dat or .csv file instead."
                 )
 
+        # Apply calibration if we have a .xlsm and a successfully parsed .csv
+        nmol_df = None
+        calibration_summary = None
+        if oms_data is not None and xlsm_files and ext == ".csv":
+            try:
+                flow_rate = float(self.data.get("flow_rate") or 1.0)
+                temperature = float(self.data.get("temperature") or 298.0)
+                pressure = float(self.data.get("pressure") or 1e5)
+                calibration = parse_calibration_xlsm(xlsm_files[0])
+                nmol_df, calibration_summary = apply_calibration(
+                    oms_data, calibration, flow_rate, temperature, pressure
+                )
+            except Exception as e:
+                LOGGER.warning(f"Calibration failed: {e}")
+
         if oms_data is not None:
-            layout = self._format_oms_plot(oms_data, show_species_input=show_species_input)
+            layout = self._format_oms_plot(
+                oms_data,
+                show_species_input=show_species_input,
+                nmol_df=nmol_df,
+                calibration_summary=calibration_summary,
+            )
             self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
         elif show_species_input:
-            # Show input widget even without data (for .dat files that need num_species)
             layout = self._create_species_input_widget(error_message=parsing_error)
             self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
