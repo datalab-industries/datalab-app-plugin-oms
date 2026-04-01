@@ -36,7 +36,7 @@ class OMSBlock(DataBlock):
     blocktype = "oms"
     name = "OMS"
     description = "Block for plotting OMS time series data."
-    accepted_file_extensions: tuple[str, ...] = (".csv", ".dat", ".exp", ".xlsm")
+    accepted_file_extensions: tuple[str, ...] = (".csv", ".dat", ".xlsm")
     multi_file = True
     block_db_model = OMSModel
     defaults = {
@@ -737,7 +737,6 @@ document.dispatchEvent(block_event);
         Supports three OMS data formats:
         - .csv: Manual export with headers (standard format)
         - .dat: Binary live-updating format (46-byte records)
-        - .exp: ASCII live-updating format (space-separated integers)
 
         Optionally accepts a .xlsm calibration file alongside the OMS data file.
         When a .xlsm is present with a .csv, nmol/s conversion and integration are shown.
@@ -759,7 +758,7 @@ document.dispatchEvent(block_event);
         filenames = [Path(info["location"]) for info in file_infos]
 
         xlsm_files = [f for f in filenames if f.suffix.lower() == ".xlsm"]
-        data_files = [f for f in filenames if f.suffix.lower() in (".csv", ".dat", ".exp")]
+        data_files = [f for f in filenames if f.suffix.lower() in (".csv", ".dat")]
 
         # Error cases when a calibration file is present
         if xlsm_files and not data_files:
@@ -777,12 +776,11 @@ document.dispatchEvent(block_event);
             self.data["bokeh_plot_data"] = bokeh.embed.json_item(layout, theme=DATALAB_BOKEH_THEME)
             return
 
-        # Pick the data file: prefer .csv, then .dat, then .exp
+        # Pick the data file: prefer .csv, then .dat
         csv_files = [f for f in data_files if f.suffix.lower() == ".csv"]
         dat_files = [f for f in data_files if f.suffix.lower() == ".dat"]
-        exp_files = [f for f in data_files if f.suffix.lower() == ".exp"]
 
-        file_path = (csv_files or dat_files or exp_files)[0]
+        file_path = (csv_files or dat_files)[0]
         ext = file_path.suffix.lower()
 
         # Get user-specified num_species and species_names if available
@@ -817,20 +815,6 @@ document.dispatchEvent(block_event);
                     parsing_error = str(e)
                     LOGGER.warning(f"Failed to parse .dat file: {e}")
                     oms_data = None
-        elif ext == ".exp":
-            base_path = file_path.with_suffix("")
-            dat_path = base_path.with_suffix(".dat")
-            csv_path = base_path.with_suffix(".csv")
-            if dat_path.exists():
-                oms_data = parse_oms_dat(dat_path)
-            elif csv_path.exists():
-                oms_data = parse_oms_csv(csv_path)
-            else:
-                raise ValueError(
-                    f".exp file '{file_path.name}' found, but cannot be plotted directly. "
-                    "Please upload the corresponding .dat or .csv file instead."
-                )
-
         # Apply calibration if we have a .xlsm and a successfully parsed .csv
         nmol_df = None
         calibration_summary = None
