@@ -850,6 +850,9 @@ document.dispatchEvent(block_event);
                     rate_t_end,
                 )
                 if calibration_summary:
+                    LOGGER.debug(f"Calibration summary: {calibration_summary}")
+                    if not self.data.get("metadata"):
+                        self.data["metadata"] = {}
                     self.data["metadata"]["calibration_results"] = calibration_summary
             except Exception as e:
                 LOGGER.warning(f"Calibration failed: {e}")
