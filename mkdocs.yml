@@ -1,6 +1,6 @@
 site_name: "datalab-app-plugin-oms"
 site_description: Documentation for datalab-app-plugin-oms.
-site_url: "https://be-smith.github.io/datalab-app-plugin-oms"
+site_url: "https://datalab-industries.github.io/datalab-app-plugin-oms"
 
 theme:
   name: material
@@ -35,15 +35,15 @@ theme:
   features:
     - content.tabs.link
 
-repo_name: "be-smith/datalab-app-plugin-oms"
-repo_url: "https://github.com/be-smith/datalab-app-plugin-oms"
+repo_name: "datalab-industries/datalab-app-plugin-oms"
+repo_url: "https://github.com/datalab-industries/datalab-app-plugin-oms"
 
 docs_dir: "docs"
 
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/be-smith
+      link: https://github.com/datalab-industries
 
 markdown_extensions:
   - admonition
