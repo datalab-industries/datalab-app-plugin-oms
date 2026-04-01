@@ -23,6 +23,7 @@ from pydatalab.file_utils import get_file_info_by_id
 from pydatalab.logger import LOGGER
 from pydatalab.mongo import flask_mongo
 
+from datalab_app_plugin_oms.models import OMSMetadata, OMSModel, OMSSpeciesCalibrationResult
 from datalab_app_plugin_oms.utils import (
     apply_calibration,
     parse_calibration_xlsm,
@@ -37,6 +38,7 @@ class OMSBlock(DataBlock):
     description = "Block for plotting OMS time series data."
     accepted_file_extensions: tuple[str, ...] = (".csv", ".dat", ".exp", ".xlsm")
     multi_file = True
+    block_db_model = OMSModel
     defaults = {
         "flow_rate": 1.0,
         "temperature": 298.0,
@@ -850,10 +852,17 @@ document.dispatchEvent(block_event);
                     rate_t_end,
                 )
                 if calibration_summary:
-                    LOGGER.debug(f"Calibration summary: {calibration_summary}")
-                    if not self.data.get("metadata"):
-                        self.data["metadata"] = {}
-                    self.data["metadata"]["calibration_results"] = calibration_summary
+                    self.data["metadata"] = OMSMetadata(
+                        flow_rate_mL_min=flow_rate,
+                        temperature_K=temperature,
+                        pressure_Pa=pressure,
+                        rate_window_start_s=rate_t_start,
+                        rate_window_end_s=rate_t_end,
+                        calibration_results={
+                            species: OMSSpeciesCalibrationResult(**stats)
+                            for species, stats in calibration_summary.items()
+                        },
+                    ).dict()
             except Exception as e:
                 LOGGER.warning(f"Calibration failed: {e}")
 
