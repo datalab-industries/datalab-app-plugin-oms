@@ -12,16 +12,18 @@ The project is being developed as part of the [FAST (Formation and Ageing for Su
 ## Features
 
 - Processes and plots data from OMS.
-- Handles both the final .csv export of the experiment and the live updating .dat binary file. (See [Data Format](data_format.md) for more information).
+- Handles both the final .csv export of the experiment and the live updating .dat binary file. (See the [documentation](https://datalab-industries.github.io/datalab-app-plugin-oms) for more information).
 - Plots species concentrations on a linear or log scale.
 - Can perform calibrations given the relevant calibration data to convert pressure to nmol/s
 - Extracts useful parameters such as peak rate, total integral (total nmol over the course of the experiment), and the initial rate (the rate within a user defined time window) and stores these in the block metadata.
 
-![Example plot](docs/images/OMS_example_plot.png)
+<div align="center">
+  <img src="./static/OMS_example_plot.png" width=600rem>
+</div>
 
 ## Usage
 
-The plugin provides three parser functions for OMS file formats (see [Data Format](docs/data_format.md) for format details):
+The plugin provides three parser functions for OMS file formats (see the [documentation](https://datalab-industries.github.io/datalab-app-plugin-oms) for format details):
 
 ### `parse_oms_csv(filename, auto_detect_header=True)`
 
