@@ -1,155 +1,242 @@
-"""Tests for OMS (Omnistar Mass Spectrometer) file parsing and plotting"""
+"""Tests for OMS (Omnistar Mass Spectrometer) file parsing and calibration"""
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from datalab_app_plugin_oms.utils import parse_oms_csv, parse_oms_dat, parse_oms_exp
+from datalab_app_plugin_oms.utils import (
+    apply_calibration,
+    parse_calibration_xlsm,
+    parse_oms_csv,
+    parse_oms_dat,
+)
 
 OMS_DATA_DIR = Path(__file__).parent.parent / "example_data"
 OMS_TEST_FILE = OMS_DATA_DIR / "2025_11_21_kdj_354_F"
+CALIBRATION_FILE = OMS_DATA_DIR / "Example_DEMS_Calibration.xlsm"
+
+SPECIES = ["CO2", "O2", "Ar", "CO/N2", "H2", "C2H2"]
 
 
-class TestOMSParsers:
-    """Test OMS file parsers"""
+# ---------------------------------------------------------------------------
+# CSV parsing
+# ---------------------------------------------------------------------------
 
-    def test_parse_csv(self):
-        """Test CSV parser returns correct columns with Time (s)"""
-        csv_path = OMS_TEST_FILE.with_suffix(".csv")
-        if not csv_path.exists():
-            pytest.skip(f"Test file not found: {csv_path}")
 
-        df = parse_oms_csv(csv_path)
+class TestParseCSV:
+    def test_columns(self):
+        df = parse_oms_csv(OMS_TEST_FILE.with_suffix(".csv"))
+        assert "Time (s)" in df.columns
+        for sp in SPECIES:
+            assert sp in df.columns
 
-        # Check that Time (s) column exists
-        assert "Time (s)" in df.columns, "CSV should have 'Time (s)' column"
+    def test_shape(self):
+        df = parse_oms_csv(OMS_TEST_FILE.with_suffix(".csv"))
+        assert len(df) == 296
 
-        # Check that expected species columns exist
-        expected_species = ["CO2", "O2", "Ar", "CO/N2", "H2", "C2H2"]
-        for species in expected_species:
-            assert species in df.columns, f"Missing species column: {species}"
+    def test_time_increases(self):
+        df = parse_oms_csv(OMS_TEST_FILE.with_suffix(".csv"))
+        assert (df["Time (s)"].diff().dropna() > 0).all()
 
-        # Check that we have data
-        assert len(df) > 0, "CSV should contain data rows"
+    def test_no_nulls(self):
+        df = parse_oms_csv(OMS_TEST_FILE.with_suffix(".csv"))
+        assert df[SPECIES].isna().sum().sum() == 0
 
-    def test_parse_dat(self):
-        """Test DAT parser returns correct columns with Data Point"""
-        dat_path = OMS_TEST_FILE.with_suffix(".dat")
-        if not dat_path.exists():
-            pytest.skip(f"Test file not found: {dat_path}")
 
-        df = parse_oms_dat(dat_path)
+# ---------------------------------------------------------------------------
+# DAT parsing — three pathways
+# ---------------------------------------------------------------------------
 
-        # Check that Data Point column exists (NOT Time (s))
-        assert "Data Point" in df.columns, "DAT should have 'Data Point' column"
-        assert "Time (s)" not in df.columns, "DAT should NOT have 'Time (s)' column"
 
-        # Check that we have data
-        assert len(df) > 0, "DAT should contain data rows"
-
-    def test_parse_exp(self):
-        """Test EXP parser returns position columns with no NaN values"""
-        exp_path = OMS_TEST_FILE.with_suffix(".exp")
-        if not exp_path.exists():
-            pytest.skip(f"Test file not found: {exp_path}")
-
-        df = parse_oms_exp(exp_path)
-
-        # Check that timepoint column exists
-        assert "timepoint" in df.columns, "EXP should have 'timepoint' column"
-
-        # Check that position columns exist (7 positions: 0-6)
-        for i in range(7):
-            col_name = f"position_{i}"
-            assert col_name in df.columns, f"Missing position column: {col_name}"
-
-        # Check that we have data
-        assert len(df) > 0, "EXP should contain data rows"
-
-        # Check that there are NO NaN values (bug fix verification)
-        assert df.isna().sum().sum() == 0, "EXP parser should not produce NaN values"
-
-        # Check expected constant values (status codes)
-        assert (df["position_0"] == 105).all(), "position_0 should always be 105"
-        assert (df["position_1"] == 5).all(), "position_1 should always be 5"
-        assert (df["position_3"] == 5).all(), "position_3 should always be 5"
-        assert (df["position_4"] == 5).all(), "position_4 should always be 5"
-        assert (df["position_5"] == 1).all(), "position_5 should always be 1"
-        assert (df["position_6"] == 114).all(), "position_6 should always be 114"
-
-        # Check that position_2 varies and increments by constant delta
-        assert df["position_2"].nunique() > 1, "position_2 should vary"
-        deltas = df["position_2"].diff().dropna()
-        assert (deltas == 322).all(), "position_2 should increment by constant +322"
-
-    def test_csv_vs_dat_data_match(self):
-        """Test that species values match between CSV and DAT files"""
-        csv_path = OMS_TEST_FILE.with_suffix(".csv")
-        dat_path = OMS_TEST_FILE.with_suffix(".dat")
-
-        if not csv_path.exists() or not dat_path.exists():
-            pytest.skip("Both CSV and DAT test files required")
-
-        csv_df = parse_oms_csv(csv_path)
-        dat_df = parse_oms_dat(dat_path)
-
-        # Should have same number of rows
-        assert len(csv_df) == len(dat_df), "CSV and DAT should have same number of timepoints"
-
-        # Species values should match (within floating point precision)
-        species = ["CO2", "O2", "Ar", "CO/N2", "H2", "C2H2"]
-        for sp in species:
-            csv_vals = csv_df[sp].values
-            dat_vals = dat_df[sp].values
-            # Use allclose for floating point comparison
-            import numpy as np
-
-            assert np.allclose(csv_vals, dat_vals, rtol=1e-14), (
-                f"{sp} values don't match between CSV and DAT"
-            )
-
-    def test_axis_label_difference(self):
-        """Test that CSV uses Time (s) while DAT uses Data Point"""
-        csv_path = OMS_TEST_FILE.with_suffix(".csv")
-        dat_path = OMS_TEST_FILE.with_suffix(".dat")
-
-        if not csv_path.exists() or not dat_path.exists():
-            pytest.skip("Both CSV and DAT test files required")
-
-        csv_df = parse_oms_csv(csv_path)
-        dat_df = parse_oms_dat(dat_path)
-
-        # CSV should have Time (s), DAT should have Data Point
-        assert "Time (s)" in csv_df.columns, "CSV should use 'Time (s)' for x-axis"
-        assert "Data Point" in dat_df.columns, "DAT should use 'Data Point' for x-axis"
-
-        # They should be mutually exclusive
-        assert "Data Point" not in csv_df.columns, "CSV should not have 'Data Point'"
-        assert "Time (s)" not in dat_df.columns, "DAT should not have 'Time (s)'"
-
-        # Data Point should be sequential, Time (s) should be real timestamps
-        assert (dat_df["Data Point"] == range(len(dat_df))).all(), "Data Point should be 0, 1, 2..."
-        assert csv_df["Time (s)"].iloc[1] > csv_df["Time (s)"].iloc[0], (
-            "Time (s) should have real time values"
+class TestParseDat:
+    def test_via_companion_csv(self):
+        """Species names and count inferred from companion CSV."""
+        df = parse_oms_dat(
+            OMS_TEST_FILE.with_suffix(".dat"),
+            csv_filepath=OMS_TEST_FILE.with_suffix(".csv"),
         )
+        assert "Data Point" in df.columns
+        assert "Vacuum" in df.columns
+        for sp in SPECIES:
+            assert sp in df.columns
+        assert len(df) == 296
+
+    def test_via_num_species(self):
+        """Species count provided explicitly, names auto-detected via value matching."""
+        df = parse_oms_dat(OMS_TEST_FILE.with_suffix(".dat"), num_species=6)
+        assert "Data Point" in df.columns
+        assert "Vacuum" in df.columns
+        for sp in SPECIES:
+            assert sp in df.columns
+        assert len(df) == 296
+
+    def test_via_species_names(self):
+        """Species names provided explicitly."""
+        df = parse_oms_dat(
+            OMS_TEST_FILE.with_suffix(".dat"),
+            num_species=6,
+            species_names=SPECIES,
+        )
+        assert "Data Point" in df.columns
+        assert "Vacuum" in df.columns
+        for sp in SPECIES:
+            assert sp in df.columns
+        assert len(df) == 296
+
+    def test_data_point_sequential(self):
+        df = parse_oms_dat(OMS_TEST_FILE.with_suffix(".dat"), num_species=6)
+        assert list(df["Data Point"]) == list(range(len(df)))
+
+    def test_no_time_column(self):
+        df = parse_oms_dat(OMS_TEST_FILE.with_suffix(".dat"), num_species=6)
+        assert "Time (s)" not in df.columns
+
+    def test_wrong_num_species_raises(self):
+        with pytest.raises(ValueError, match="not evenly divisible"):
+            parse_oms_dat(OMS_TEST_FILE.with_suffix(".dat"), num_species=5)
+
+
+# ---------------------------------------------------------------------------
+# CSV vs DAT data agreement
+# ---------------------------------------------------------------------------
+
+
+class TestCSVvsDat:
+    @pytest.fixture(scope="class")
+    def csv_df(self):
+        return parse_oms_csv(OMS_TEST_FILE.with_suffix(".csv"))
+
+    @pytest.fixture(scope="class")
+    def dat_df(self):
+        return parse_oms_dat(
+            OMS_TEST_FILE.with_suffix(".dat"),
+            csv_filepath=OMS_TEST_FILE.with_suffix(".csv"),
+        )
+
+    def test_same_row_count(self, csv_df, dat_df):
+        assert len(csv_df) == len(dat_df)
+
+    @pytest.mark.parametrize("species", SPECIES)
+    def test_species_values_match(self, csv_df, dat_df, species):
+        """Values from DAT should match CSV to floating-point precision."""
+        assert np.allclose(csv_df[species].values, dat_df[species].values, rtol=1e-14)
+
+    def test_dat_has_vacuum_csv_does_not(self, csv_df, dat_df):
+        assert "Vacuum" in dat_df.columns
+        assert "Vacuum" not in csv_df.columns
+
+
+# ---------------------------------------------------------------------------
+# Calibration file parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseCalibration:
+    @pytest.fixture(scope="class")
+    def calibration(self):
+        return parse_calibration_xlsm(CALIBRATION_FILE)
+
+    def test_species_present(self, calibration):
+        assert "O2" in calibration
+        assert "CO2" in calibration
+
+    def test_slope_intercept_keys(self, calibration):
+        for species, cal in calibration.items():
+            assert "slope" in cal
+            assert "intercept" in cal
+
+    def test_known_values(self, calibration):
+        """Slope and intercept should match known values from Example_DEMS_Calibration.xlsm."""
+        assert np.isclose(calibration["O2"]["slope"], 1.0711656549520764e-07, rtol=1e-6)
+        assert np.isclose(calibration["O2"]["intercept"], 9.314283706070297e-10, rtol=1e-6)
+        assert np.isclose(calibration["CO2"]["slope"], 1.26309963099631e-06, rtol=1e-6)
+        assert np.isclose(calibration["CO2"]["intercept"], -7.020295202952036e-09, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Calibration application
+# ---------------------------------------------------------------------------
+
+
+class TestApplyCalibration:
+    @pytest.fixture(scope="class")
+    def calibration(self):
+        return parse_calibration_xlsm(CALIBRATION_FILE)
+
+    @pytest.fixture(scope="class")
+    def csv_df(self):
+        return parse_oms_csv(OMS_TEST_FILE.with_suffix(".csv"))
+
+    @pytest.fixture(scope="class")
+    def result(self, csv_df, calibration):
+        nmol_df, summary = apply_calibration(csv_df, calibration)
+        return nmol_df, summary
+
+    def test_returns_dataframe_and_summary(self, result):
+        nmol_df, summary = result
+        assert nmol_df is not None
+        assert isinstance(summary, dict)
+
+    def test_nmol_df_columns(self, result):
+        nmol_df, _ = result
+        assert "Time (s)" in nmol_df.columns
+        for sp in ["O2", "CO2"]:
+            assert f"{sp}_nmol_s" in nmol_df.columns
+            assert f"{sp}_raw_nmol_s" in nmol_df.columns
+            assert f"{sp}_baseline" in nmol_df.columns
+
+    def test_summary_keys(self, result):
+        _, summary = result
+        for sp in ["O2", "CO2"]:
+            assert sp in summary
+            assert "peak_flux_nmol_s" in summary[sp]
+            assert "total_nmol" in summary[sp]
+            assert "initial_rate_nmol_s" in summary[sp]
+
+    def test_known_summary_values(self, result):
+        """Summary values should match known output for this calibration + data combination."""
+        _, summary = result
+        assert np.isclose(summary["O2"]["peak_flux_nmol_s"], 204.026, rtol=1e-3)
+        assert np.isclose(summary["O2"]["total_nmol"], 40785.8, rtol=1e-3)
+        assert np.isclose(summary["CO2"]["peak_flux_nmol_s"], 0.6724, rtol=1e-3)
+        assert np.isclose(summary["CO2"]["total_nmol"], 1030.4, rtol=1e-3)
+
+    def test_missing_time_column_returns_none(self, calibration):
+        """apply_calibration should return (None, {}) if no Time (s) column."""
+        dat_df = parse_oms_dat(OMS_TEST_FILE.with_suffix(".dat"), num_species=6)
+        nmol_df, summary = apply_calibration(dat_df, calibration)
+        assert nmol_df is None
+        assert summary == {}
+
+
+# ---------------------------------------------------------------------------
+# Block creation
+# ---------------------------------------------------------------------------
 
 
 class TestOMSBlock:
-    """Test OMS block plotting functionality"""
-
     def test_block_creation(self):
-        """Test that OMS block can be created"""
         from datalab_app_plugin_oms import OMSBlock
 
         block = OMSBlock(item_id="test-id")
         assert block.blocktype == "oms"
         assert block.name == "OMS"
 
+    def test_defaults_populated(self):
+        from datalab_app_plugin_oms import OMSBlock
+
+        block = OMSBlock(item_id="test-id")
+        assert block.data["flow_rate"] == 1.0
+        assert block.data["temperature"] == 298.0
+        assert block.data["pressure"] == 1e5
+        assert block.data["rate_t_start"] == 0.0
+        assert block.data["rate_t_end"] == 1800.0
+
     def test_accepted_extensions(self):
-        """Test that OMS block accepts correct file extensions"""
         from datalab_app_plugin_oms import OMSBlock
 
         block = OMSBlock(item_id="test-id")
         assert ".csv" in block.accepted_file_extensions
         assert ".dat" in block.accepted_file_extensions
-        assert ".exp" in block.accepted_file_extensions
+        assert ".xlsm" in block.accepted_file_extensions
