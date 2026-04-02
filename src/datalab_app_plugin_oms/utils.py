@@ -451,7 +451,8 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
     """
     Parse calibration slope and intercept values from an OMS calibration .xlsm file.
 
-    Reads Sheet 1 of the workbook, which contains linear calibration data mapping
+    Reads the sheet named "Calibration" (falling back to the first sheet if that name is
+    absent), which contains linear calibration data mapping
     OMS partial pressure (Torr) to species percentage::
 
         y = Pressure / Torr  |  x = % O2   |  ...  |  y = Pressure / Torr  |  x = % CO2
@@ -476,8 +477,10 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
     """
     filepath = Path(filepath)
 
-    # Read sheet 1 with no header so we can inspect all rows by index
-    df = pd.read_excel(filepath, sheet_name=0, header=None)
+    # Prefer the sheet named "Calibration"; fall back to the first sheet if absent.
+    xl = pd.ExcelFile(filepath)
+    sheet = "Calibration" if "Calibration" in xl.sheet_names else 0
+    df = pd.read_excel(xl, sheet_name=sheet, header=None)
 
     # Row 0 (Excel row 1): find columns whose value matches "x = % <Species>"
     header_row = df.iloc[0]
@@ -490,8 +493,14 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
         if not val_stripped.startswith("x = %"):
             continue
         species = val_stripped[len("x = %") :].strip()
-        slope = df.iloc[6, col_idx]  # Row 7 (0-indexed: 6)
-        intercept = df.iloc[7, col_idx]  # Row 8 (0-indexed: 7)
+        try:
+            slope = df.iloc[6, col_idx]  # Row 7 (0-indexed: 6)
+            intercept = df.iloc[7, col_idx]  # Row 8 (0-indexed: 7)
+        except IndexError:
+            raise ValueError(
+                f"Calibration file '{filepath.name}' has fewer than 8 rows — "
+                "expected slope in row 7 and intercept in row 8."
+            )
         if pd.isna(slope) or pd.isna(intercept):
             LOGGER.warning(
                 f"Calibration: missing slope/intercept for '{species}' in column {col_idx} — skipping."
@@ -592,7 +601,11 @@ def apply_calibration(
         )
 
     if not result_cols:
-        return None, {}
+        raise ValueError(
+            f"No overlap between calibration species ({list(calibration.keys())}) "
+            f"and OMS data columns ({[c for c in oms_df.columns if c != 'Time (s)']}). "
+            "Check that species names in the calibration file match the OMS data."
+        )
 
     nmol_df = pd.DataFrame({"Time (s)": time_s, **result_cols})
     return nmol_df, summary
