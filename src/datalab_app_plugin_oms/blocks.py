@@ -10,6 +10,7 @@ from bokeh.models import (
     CustomJS,
     Div,
     HoverTool,
+    LayoutDOM,
     Legend,
     Panel,
     Tabs,
@@ -212,7 +213,7 @@ class OMSBlock(DataBlock):
         except ValueError as e:
             raise ValueError(f"Invalid rate_t_end. Must be a positive number: {e}")
 
-    def _create_error_div(self, message: str) -> bokeh.layouts.layout:
+    def _create_error_div(self, message: str) -> LayoutDOM:
         """Return a simple Bokeh layout containing an error message."""
         return column(
             Div(
@@ -246,16 +247,14 @@ document.dispatchEvent(block_event);
         )
         return reset_button
 
-    def _create_species_input_widget(
-        self, error_message: str | None = None
-    ) -> bokeh.layouts.layout:
+    def _create_species_input_widget(self, error_message: str | None = None) -> LayoutDOM:
         """Create a standalone widget for inputting number of species when data can't be parsed yet
 
         Args:
             error_message: Optional error message from failed parsing attempt
 
         Returns:
-            bokeh.layouts.layout: Bokeh layout with instructions and input widget
+            LayoutDOM: Bokeh layout with instructions and input widget
         """
         # Get current stored values
         current_num_species = self.data.get("num_species", "")
@@ -354,7 +353,7 @@ document.dispatchEvent(block_event);
         calibration_summary: dict | None = None,
         rate_t_start: float = 0.0,
         rate_t_end: float = 1800.0,
-    ) -> bokeh.layouts.layout:
+    ) -> LayoutDOM:
         """Formats OMS data for plotting in Bokeh with all species plotted and toggleable legends
 
         Args:
@@ -362,7 +361,7 @@ document.dispatchEvent(block_event);
             show_species_input: Whether to show the species number input (for .dat files only)
 
         Returns:
-            bokeh.layouts.layout: Bokeh layout with OMS data plotted
+            LayoutDOM: Bokeh layout with OMS data plotted
         """
         # Determine x-axis column and label based on what's available
         if "Time (s)" in oms_data.columns:
