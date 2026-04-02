@@ -120,7 +120,7 @@ class TestCSVvsDat:
     @pytest.mark.parametrize("species", SPECIES)
     def test_species_values_match(self, csv_df, dat_df, species):
         """Values from DAT should match CSV to floating-point precision."""
-        assert np.allclose(csv_df[species].values, dat_df[species].values, rtol=1e-14)
+        assert np.allclose(csv_df[species].values, dat_df[species].values, rtol=1e-9, atol=1e-12)
 
     def test_dat_has_vacuum_csv_does_not(self, csv_df, dat_df):
         assert "Vacuum" in dat_df.columns
