@@ -583,11 +583,7 @@ def apply_calibration(
             LOGGER.debug(f"Calibration species '{species}' not found in OMS data — skipping.")
             continue
         p_torr = oms_df[species].to_numpy(dtype=float)
-        # In example excel sheet the intercept is added rather than subtracted as expected for y=mx+c
-        if species == "CO2":
-            pct = (p_torr + cal["intercept"]) / cal["slope"]
-        else:
-            pct = (p_torr - cal["intercept"]) / cal["slope"]
+        pct = (p_torr - cal["intercept"]) / cal["slope"]
         mol_s = P_total * (flow_rate * pct * 1e-6 / 60.0) / (_R * T)
         nmol_s = mol_s * 1e9
         raw_col_name = f"{species}_raw_nmol_s"
