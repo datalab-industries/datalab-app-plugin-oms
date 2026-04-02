@@ -540,6 +540,12 @@ document.dispatchEvent(block_event);
                 if c != "Time (s)" and not c.endswith("_baseline") and not c.endswith("_raw_nmol_s")
             ]
             raw_species_cols = [c for c in nmol_df.columns if c.endswith("_raw_nmol_s")]
+            # Pre-compute dummy columns used by hover glyphs before creating the ColumnDataSource,
+            # so the source snapshot includes them (mutating nmol_df after source creation has no effect).
+            if raw_species_cols:
+                nmol_df["_raw_mean"] = nmol_df[raw_species_cols].mean(axis=1)
+            if nmol_species_cols:
+                nmol_df["_corrected_mean"] = nmol_df[nmol_species_cols].mean(axis=1)
             nmol_source = ColumnDataSource(nmol_df)
 
             def _make_figure(y_axis_type, y_label):
@@ -558,7 +564,6 @@ document.dispatchEvent(block_event);
                 return p
 
             def _add_legend_and_hover(p, legend_items, hover_cols, dummy_col):
-                nmol_df[dummy_col] = nmol_df[hover_cols].mean(axis=1)
                 dummy = p.line(
                     x="Time (s)", y=dummy_col, source=nmol_source, alpha=0, level="overlay"
                 )
