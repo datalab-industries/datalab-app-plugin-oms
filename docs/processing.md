@@ -10,16 +10,6 @@ pct = (P_torr - intercept) / slope
 
 This fraction is then converted to a molar flux (nmol/s) via the ideal gas law using the user-supplied flow rate, temperature, and pressure.
 
-### CO2 sign convention
-
-For CO2, the calibration intercept is **added** rather than subtracted:
-
-```
-pct = (P_torr + intercept) / slope
-```
-
-This is an empirical quirk of the calibration spreadsheet format used with this instrument — the intercept for CO2 is stored with the opposite sign convention to all other species. The code accounts for this explicitly.
-
 ## Baseline correction
 
 After conversion to nmol/s, a baseline correction is applied to each species to remove the instrument background signal and slow drift.
