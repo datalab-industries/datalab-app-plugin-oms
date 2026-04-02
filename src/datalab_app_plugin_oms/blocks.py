@@ -351,6 +351,7 @@ document.dispatchEvent(block_event);
         show_species_input: bool = False,
         nmol_df: pd.DataFrame | None = None,
         calibration_summary: dict | None = None,
+        calibration_error: str | None = None,
         rate_t_start: float = 0.0,
         rate_t_end: float = 1800.0,
     ) -> LayoutDOM:
@@ -530,6 +531,12 @@ document.dispatchEvent(block_event);
             ]
         else:
             layout_children = [controls_layout]
+
+        # --- Calibration error (calibration file present but calibration failed) ---
+        if calibration_error is not None:
+            layout_children.append(
+                self._create_error_div(f"Calibration failed: {calibration_error}")
+            )
 
         # --- Calibration section (only when nmol data is available) ---
         if nmol_df is not None and calibration_summary:
@@ -730,6 +737,49 @@ document.dispatchEvent(block_event);
 
         return column(children=layout_children, sizing_mode="stretch_width")
 
+    def _run_calibration(
+        self, oms_data: pd.DataFrame, xlsm_path: Path
+    ) -> tuple[pd.DataFrame | None, dict | None, str | None]:
+        """Parse calibration file and apply it to OMS data.
+
+        Returns:
+            Tuple of (nmol_df, calibration_summary, error_message).
+            On success, error_message is None. On failure, nmol_df and
+            calibration_summary are None and error_message describes the problem.
+        """
+        try:
+            flow_rate = float(self.data["flow_rate"])
+            temperature = float(self.data["temperature"])
+            pressure = float(self.data["pressure"])
+            rate_t_start = float(self.data["rate_t_start"])
+            rate_t_end = float(self.data["rate_t_end"])
+            calibration = parse_calibration_xlsm(xlsm_path)
+            nmol_df, calibration_summary = apply_calibration(
+                oms_data,
+                calibration,
+                flow_rate,
+                temperature,
+                pressure,
+                rate_t_start,
+                rate_t_end,
+            )
+            if calibration_summary:
+                self.data["metadata"] = OMSMetadata(
+                    flow_rate_mL_min=flow_rate,
+                    temperature_K=temperature,
+                    pressure_Pa=pressure,
+                    rate_window_start_s=rate_t_start,
+                    rate_window_end_s=rate_t_end,
+                    calibration_results={
+                        species: OMSSpeciesCalibrationResult(**stats)
+                        for species, stats in calibration_summary.items()
+                    },
+                ).dict()
+            return nmol_df, calibration_summary, None
+        except Exception as e:
+            LOGGER.warning(f"Calibration failed: {e}")
+            return None, None, str(e)
+
     def generate_oms_plot(self):
         """Generate OMS plot from uploaded file(s).
 
@@ -815,39 +865,11 @@ document.dispatchEvent(block_event);
                     LOGGER.warning(f"Failed to parse .dat file: {e}")
                     oms_data = None
         # Apply calibration if we have a .xlsm and a successfully parsed .csv
-        nmol_df = None
-        calibration_summary = None
+        nmol_df, calibration_summary, calibration_error = None, None, None
         if oms_data is not None and xlsm_files and ext == ".csv":
-            try:
-                flow_rate = float(self.data["flow_rate"])
-                temperature = float(self.data["temperature"])
-                pressure = float(self.data["pressure"])
-                rate_t_start = float(self.data["rate_t_start"])
-                rate_t_end = float(self.data["rate_t_end"])
-                calibration = parse_calibration_xlsm(xlsm_files[0])
-                nmol_df, calibration_summary = apply_calibration(
-                    oms_data,
-                    calibration,
-                    flow_rate,
-                    temperature,
-                    pressure,
-                    rate_t_start,
-                    rate_t_end,
-                )
-                if calibration_summary:
-                    self.data["metadata"] = OMSMetadata(
-                        flow_rate_mL_min=flow_rate,
-                        temperature_K=temperature,
-                        pressure_Pa=pressure,
-                        rate_window_start_s=rate_t_start,
-                        rate_window_end_s=rate_t_end,
-                        calibration_results={
-                            species: OMSSpeciesCalibrationResult(**stats)
-                            for species, stats in calibration_summary.items()
-                        },
-                    ).dict()
-            except Exception as e:
-                LOGGER.warning(f"Calibration failed: {e}")
+            nmol_df, calibration_summary, calibration_error = self._run_calibration(
+                oms_data, xlsm_files[0]
+            )
 
         if oms_data is not None:
             layout = self._format_oms_plot(
@@ -855,6 +877,7 @@ document.dispatchEvent(block_event);
                 show_species_input=show_species_input,
                 nmol_df=nmol_df,
                 calibration_summary=calibration_summary,
+                calibration_error=calibration_error,
                 rate_t_start=self.data["rate_t_start"],
                 rate_t_end=self.data["rate_t_end"],
             )
