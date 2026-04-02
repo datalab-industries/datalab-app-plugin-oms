@@ -540,12 +540,6 @@ document.dispatchEvent(block_event);
                 if c != "Time (s)" and not c.endswith("_baseline") and not c.endswith("_raw_nmol_s")
             ]
             raw_species_cols = [c for c in nmol_df.columns if c.endswith("_raw_nmol_s")]
-            # Pre-compute dummy columns used by hover glyphs before creating the ColumnDataSource,
-            # so the source snapshot includes them (mutating nmol_df after source creation has no effect).
-            if raw_species_cols:
-                nmol_df["_raw_mean"] = nmol_df[raw_species_cols].mean(axis=1)
-            if nmol_species_cols:
-                nmol_df["_corrected_mean"] = nmol_df[nmol_species_cols].mean(axis=1)
             nmol_source = ColumnDataSource(nmol_df)
 
             def _make_figure(y_axis_type, y_label):
@@ -563,10 +557,7 @@ document.dispatchEvent(block_event);
                 p.js_on_event(DoubleTap, CustomJS(args=dict(p=p), code="p.reset.emit()"))
                 return p
 
-            def _add_legend_and_hover(p, legend_items, hover_cols, dummy_col):
-                dummy = p.line(
-                    x="Time (s)", y=dummy_col, source=nmol_source, alpha=0, level="overlay"
-                )
+            def _add_legend_and_hover(p, legend_items, hover_cols, line_renderers):
                 legend = Legend(
                     items=legend_items,
                     click_policy="hide",
@@ -586,7 +577,7 @@ document.dispatchEvent(block_event);
                     HoverTool(
                         tooltips=tooltips,
                         formatters=formatters,
-                        renderers=[dummy],
+                        renderers=line_renderers,
                         mode="vline",
                         line_policy="none",
                     )
@@ -595,6 +586,7 @@ document.dispatchEvent(block_event);
             def create_raw_plot(y_axis_type):
                 p = _make_figure(y_axis_type, "nmol/s (raw)")
                 legend_items = []
+                line_renderers = []
                 for i, col in enumerate(raw_species_cols):
                     color = colors[i % len(colors)]
                     label = col.replace("_raw_nmol_s", "")
@@ -602,6 +594,7 @@ document.dispatchEvent(block_event);
                         x="Time (s)", y=col, source=nmol_source, color=color, line_width=2
                     )
                     circle = p.circle(x="Time (s)", y=col, source=nmol_source, color=color, size=4)
+                    line_renderers.append(line)
                     legend_items.append((label, [line, circle]))
                     baseline_col = f"{label}_baseline"
                     if baseline_col in nmol_df.columns:
@@ -615,7 +608,7 @@ document.dispatchEvent(block_event);
                             alpha=0.6,
                         )
                         legend_items.append((f"{label} baseline", [bl]))
-                _add_legend_and_hover(p, legend_items, raw_species_cols, "_raw_mean")
+                _add_legend_and_hover(p, legend_items, raw_species_cols, line_renderers)
                 return p
 
             def create_corrected_plot(y_axis_type):
@@ -632,6 +625,7 @@ document.dispatchEvent(block_event);
                     )
                 )
                 legend_items = []
+                line_renderers = []
                 for i, col in enumerate(nmol_species_cols):
                     color = colors[i % len(colors)]
                     label = col.replace("_nmol_s", "")
@@ -639,8 +633,9 @@ document.dispatchEvent(block_event);
                         x="Time (s)", y=col, source=nmol_source, color=color, line_width=2
                     )
                     circle = p.circle(x="Time (s)", y=col, source=nmol_source, color=color, size=4)
+                    line_renderers.append(line)
                     legend_items.append((label, [line, circle]))
-                _add_legend_and_hover(p, legend_items, nmol_species_cols, "_corrected_mean")
+                _add_legend_and_hover(p, legend_items, nmol_species_cols, line_renderers)
                 return p
 
             p_raw_linear = create_raw_plot("linear")
