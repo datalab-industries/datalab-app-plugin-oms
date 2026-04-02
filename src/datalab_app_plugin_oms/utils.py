@@ -461,7 +461,8 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
         Intercept            |  <value>     |  ...  |  Intercept            |  <value>
 
     Species are detected from headers of the form ``x = % <Species>``.
-    The slope and intercept are taken from rows 7 and 8 of the same column.
+    The slope and intercept are found by searching for "Slope" and "Intercept" row
+    labels in the first column within the first 20 rows.
 
     Args:
         filepath: Path to the .xlsm calibration file.
@@ -473,7 +474,8 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
              "CO2": {"slope": 1.165e-6, "intercept": -3.157e-9}}
 
     Raises:
-        ValueError: If no calibration species can be found in the file.
+        ValueError: If "Slope"/"Intercept" row labels cannot be found, or if no
+            calibration species headers are present.
     """
     filepath = Path(filepath)
 
@@ -484,6 +486,21 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
 
     # Row 0 (Excel row 1): find columns whose value matches "x = % <Species>"
     header_row = df.iloc[0]
+
+    # Search the first 20 rows for "Slope" and "Intercept" labels in the first column
+    search_rows = df.iloc[:20, 0].fillna("")
+    slope_row = next(
+        (i for i, v in enumerate(search_rows) if str(v).strip().lower() == "slope"), None
+    )
+    intercept_row = next(
+        (i for i, v in enumerate(search_rows) if str(v).strip().lower() == "intercept"), None
+    )
+    if slope_row is None or intercept_row is None:
+        raise ValueError(
+            f"Calibration file '{filepath.name}': could not find 'Slope' and 'Intercept' "
+            "row labels in the first 20 rows of the first column."
+        )
+
     calibration: dict[str, dict[str, float]] = {}
 
     for col_idx, val in header_row.items():
@@ -493,14 +510,8 @@ def parse_calibration_xlsm(filepath: str | Path) -> dict[str, dict[str, float]]:
         if not val_stripped.startswith("x = %"):
             continue
         species = val_stripped[len("x = %") :].strip()
-        try:
-            slope = df.iloc[6, col_idx]  # Row 7 (0-indexed: 6)
-            intercept = df.iloc[7, col_idx]  # Row 8 (0-indexed: 7)
-        except IndexError:
-            raise ValueError(
-                f"Calibration file '{filepath.name}' has fewer than 8 rows — "
-                "expected slope in row 7 and intercept in row 8."
-            )
+        slope = df.iloc[slope_row, col_idx]
+        intercept = df.iloc[intercept_row, col_idx]
         if pd.isna(slope) or pd.isna(intercept):
             LOGGER.warning(
                 f"Calibration: missing slope/intercept for '{species}' in column {col_idx} — skipping."
