@@ -611,8 +611,15 @@ def percentile_envelope_baseline(
     )
 
     # Step 2: optional smoothing
+    # savgol_filter requires smooth_window <= len(baseline), smooth_window odd, polyorder < smooth_window
     if smooth:
-        baseline = savgol_filter(baseline, smooth_window, polyorder)
+        n = len(baseline)
+        sw = min(smooth_window, n)
+        if sw % 2 == 0:
+            sw -= 1
+        if sw > polyorder and sw >= 1:
+            baseline = savgol_filter(baseline, sw, polyorder)
+        # else: signal too short to smooth, use unsmoothed baseline
 
     # Step 3: subtract
     corrected = signal - baseline
