@@ -43,6 +43,9 @@ changelog = "https://github.com/be-smith/datalab-app-plugin-oms/CHANGELOG.md"
 [project.entry-points.'pydatalab.apps.plugins']
 OMSBlock = "datalab_app_plugin_oms.blocks:OMSBlock"
 
+[tool.setuptools_scm]
+version_scheme = "post-release"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
