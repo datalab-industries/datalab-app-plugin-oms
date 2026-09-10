@@ -29,7 +29,6 @@ dependencies = [
     "pandas ~= 2.2",
     "numpy ~= 1.26",  # Match main datalab - bokeh 2.4 is incompatible with numpy 2.x
     "scipy ~= 1.13",
-    "datalab-server[apps] >= 0.7.9",  # first release expected to include the pydantic v2 migration; not yet on PyPI
     "openpyxl ~= 3.1",
 ]
 
@@ -90,7 +89,7 @@ dev-dependencies = [
 # pydantic <2). Remove once a datalab-server release satisfying the floor above is
 # published, or update the branch name if that work moves elsewhere first.
 [tool.uv.sources]
-datalab-server = { git = "https://github.com/datalab-org/datalab", branch = "bes/FAST_plugin_pydanticv2", subdirectory = "pydatalab" }
+datalab-server = { git = "https://github.com/datalab-org/datalab", branch = "bes/FAST_plugin_pydanticv2-rebased", subdirectory = "pydatalab" }
 
 [tool.coverage.run]
 include = ["src/*"]
