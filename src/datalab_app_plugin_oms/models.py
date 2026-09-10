@@ -1,9 +1,13 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 from pydatalab.models.blocks import DataBlockResponse
 
 
 class OMSSpeciesCalibrationResult(BaseModel):
     """Extracted calibration results for a single species."""
+
+    model_config = ConfigDict(extra="forbid")
 
     peak_flux_nmol_s: float
     """Peak molar flux in nmol/s."""
@@ -14,12 +18,11 @@ class OMSSpeciesCalibrationResult(BaseModel):
     initial_rate_nmol_s: float | None = None
     """Mean molar flux in nmol/s over the user-defined rate window."""
 
-    class Config:
-        extra = "forbid"
-
 
 class OMSMetadata(BaseModel):
     """Metadata extracted from an OMS block, suitable for database search."""
+
+    model_config = ConfigDict(extra="forbid")
 
     flow_rate_mL_min: float | None = None
     """Carrier gas flow rate in mL/min used for the nmol/s conversion."""
@@ -39,14 +42,11 @@ class OMSMetadata(BaseModel):
     calibration_results: dict[str, OMSSpeciesCalibrationResult] | None = None
     """Per-species extracted values keyed by species name (e.g. 'O2', 'CO2')."""
 
-    class Config:
-        extra = "forbid"
-
 
 class OMSModel(DataBlockResponse):
     """Response model for the OMS block — defines the full schema of self.data."""
 
-    blocktype: str = Field("oms", const=True)
+    blocktype: Literal["oms"] = "oms"
 
     # Instrument / conversion parameters
     flow_rate: float = 1.0

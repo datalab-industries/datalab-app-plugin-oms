@@ -774,7 +774,7 @@ document.dispatchEvent(block_event);
                         species: OMSSpeciesCalibrationResult(**stats)
                         for species, stats in calibration_summary.items()
                     },
-                ).dict()
+                ).model_dump()
             return nmol_df, calibration_summary, None
         except Exception as e:
             LOGGER.warning(f"Calibration failed: {e}")
